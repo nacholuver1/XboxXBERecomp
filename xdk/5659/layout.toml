@@ -22,6 +22,7 @@ CDevice_Size          = 0x2490  # Direct3D_CreateDevice 0x2066B0 clears 0x924 dw
 CDevice_Flags             = 0x8    # Direct3D_CreateDevice 0x2066B0 ors BehaviorFlags & 0x10 into it, D3DDevice_SetPixelShader 0x204540 tests that bit
 CDevice_Time              = 0x2C   # same field as 5849: the fence time the push buffer waits on
 CDevice_PixelShader       = 0x780  # D3DDevice_SetPixelShader 0x204540 stores the handle at the top
+CDevice_Reports           = 0x7D0  # visibility test report pages, 256 reports of 16 bytes each: D3DDevice_GetVisibilityTestResult 0x202920 reads [0x7D0 + (index >> 8) * 4]
 CDevice_VertexShader      = 0x790  # D3DDevice_SetVertexShader 0x202590 reads and stores the current shader object here, the handle goes to 0x794; the native code at 0x2024A0 dereferences it
 CDevice_BackBufferScale   = 0x968  # CDevice::InitializeFrameBuffers 0x209980 stores the X scale as a float, the Y scale at +4
 CDevice_Viewport          = 0xED0  # D3DDevice_SetViewport 0x203280 stores X, Y, Width, Height, MinZ (+0x10), MaxZ
