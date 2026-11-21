@@ -97,6 +97,7 @@ std::string CodeGen::EmitFunction(uint32_t entry) {
     // the continuation throws X86Resume, caught by the innermost such frame whose stack holds the resume esp
     bool seh = false;
     for (uint32_t va : body) {
+        if (an_.setjmp_calls.count(va)) seh = true;  // a longjmp resumes after the call, in this frame
         ZydisDecodedInstruction in;
         ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
         if (an_.Decode(va, in, ops) && in.mnemonic == ZYDIS_MNEMONIC_MOV && ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY &&

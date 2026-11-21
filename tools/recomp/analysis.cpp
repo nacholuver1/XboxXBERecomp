@@ -542,6 +542,7 @@ void Analysis::Run() {
         }
     }
     EhContinuations();
+    SetjmpContinuations();
     // every direct call from decoded code names a function
     for (bool changed = true; changed;) {
         changed = false;
@@ -577,6 +578,26 @@ void Analysis::MakeFunction(uint32_t va) {
     std::vector<uint32_t> calls;
     if (cov == 0) Walk(va, true, &calls);
     functions.insert(va);
+}
+
+// setjmp returns twice: the second time through longjmp, which restores esp and jumps to the return address it
+// saved. That address becomes an entry and a continuation (x86_icall throws X86Resume for it), and codegen gives
+// the function holding the call a catch frame, which unwinds the host stack back to it.
+void Analysis::SetjmpContinuations() {
+    if (cfg.setjmp.empty()) return;
+    std::vector<std::pair<uint32_t, uint32_t>> calls;  // call, return address
+    for (auto& [va, insn] : insns_)
+        if (insn.flow == Flow::Call && cfg.setjmp.count(insn.target)) calls.push_back({va, va + insn.len});
+    for (auto& [call, ret] : calls) {
+        MakeFunction(ret);
+        if (!functions.count(ret)) {
+            std::fprintf(stderr, "setjmp: return address %08X of the call at %08X is not decodable\n", ret, call);
+            continue;
+        }
+        continuations.insert(ret);
+        setjmp_calls.insert(call);
+    }
+    std::fprintf(stderr, "setjmp: %zu calls, %zu continuations\n", calls.size(), setjmp_calls.size());
 }
 
 // MSVC C++ EH: a frame's handler thunk is "mov eax, FuncInfo; jmp __CxxFrameHandler". Its catch blocks and unwind

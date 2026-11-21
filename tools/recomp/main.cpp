@@ -97,6 +97,10 @@ static bool LoadConfig(const fs::path& path, Config& cfg, const fs::path& xdk_di
     if (auto a = t["xbe"]["code_prefixes"].as_array())
         for (auto& i : *a)
             if (auto s = i.value<std::string>()) cfg.code_prefixes.push_back(*s);
+    if (auto v = t["xbe"]["setjmp"].value<int64_t>()) cfg.setjmp.insert(uint32_t(*v));
+    if (auto a = t["xbe"]["setjmp"].as_array())
+        for (auto& i : *a)
+            if (auto v = i.value<int64_t>()) cfg.setjmp.insert(uint32_t(*v));
     if (auto a = t["xbe"]["data_ranges"].as_array())
         for (auto& i : *a)
             if (auto r = i.as_array(); r && r->size() == 2)
