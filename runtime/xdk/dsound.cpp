@@ -170,6 +170,10 @@ X86Func* Find(uint32_t guest);
 #define SYM_IDirectSoundBuffer_SetNotificationPositions FFFFFF23
 #define HAS_IDirectSoundBuffer_SetNotificationPositions 0
 #endif
+#ifndef SYM_IDirectSoundBuffer_SetRolloffFactor
+#define SYM_IDirectSoundBuffer_SetRolloffFactor FFFFFF24
+#define HAS_IDirectSoundBuffer_SetRolloffFactor 0
+#endif
 
 namespace {
 
@@ -915,7 +919,7 @@ static void AuditExports() {
     static const uint32_t handled[] = {
         SYM(DirectSoundCreate), SYM(IDirectSound_Release), SYM(DirectSoundUseFullHRTF), SYM(DirectSoundUseLightHRTF),
         SYM(IDirectSound_GetSpeakerConfig), SYM(IDirectSound_GetCaps), SYM(IDirectSoundBuffer_SetMode),
-        SYM(IDirectSoundBuffer_SetDopplerFactor),
+        SYM(IDirectSoundBuffer_SetDopplerFactor), SYM(IDirectSoundBuffer_SetRolloffFactor),
         SYM(IDirectSound_SetEffectData), SYM(IDirectSound_EnableHeadphones), SYM(IDirectSound_SetMixBinHeadroom),
         SYM(IDirectSound_CommitDeferredSettings), SYM(IDirectSound_SetDopplerFactor), SYM(IDirectSound_SetRolloffFactor),
         SYM(IDirectSound_SetDistanceFactor), SYM(IDirectSound_SetVelocity), SYM(IDirectSound_SetI3DL2Listener),
@@ -1328,6 +1332,8 @@ BUFFER(SetMode, 3) {
     return 0;
 }
 BUFFER(SetDopplerFactor, 3) { return 0; }
+// (this, factor, apply): the distance model has no rolloff factor, as for streams and the listener
+BUFFER(SetRolloffFactor, 3) { return 0; }
 // (this, DS3DBUFFER, apply): position at +4, distances at +0x34 and +0x38, mode at +0x3C
 BUFFER(SetAllParameters, 3) {
     for (int i = 0; i < 3; i++) v.p[i] = F32(R32(a[1] + 4 + i * 4));
