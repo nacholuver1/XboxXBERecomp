@@ -128,7 +128,10 @@ public:
             c.data = Put(indices, size_t(count) * 2);
         }
         cur_->cmds.push_back(c);
-        for (uint32_t tex : s.textures) Use(tex);
+        for (uint32_t tex : s.textures) {
+            Use(tex);
+            UseData(tex);
+        }
         for (uint32_t pal : s.palettes) Use(pal);
         for (const auto& st : s.streams) Use(st.vb);
         Use(s.rt.header);
@@ -231,17 +234,14 @@ public:
     bool FencePending(uint32_t fence) override { return fence > done_.load(); }
     void WaitFence(uint32_t fence) override { Wait(fence, WaitFor::Fence, "fence"); }
     bool Busy(uint32_t resource) override {
-        auto it = last_use_.find(resource);
-        if (it == last_use_.end()) return false;
+        uint64_t id = LastUse(resource);
+        if (!id) return false;
         // used by the batch still being recorded: send it, as the console's IsBusy kicks the push buffer off, or a
         // title polling a resource between frames (a loading screen) waits for a batch nothing else will send
-        if (it->second >= cur_->id) Submit();
-        return it->second > done_.load();
+        if (id >= cur_->id) Submit();
+        return id > done_.load();
     }
-    void WaitResource(uint32_t resource) override {
-        auto it = last_use_.find(resource);
-        if (it != last_use_.end()) Wait(it->second, WaitFor::Resource, "resource");
-    }
+    void WaitResource(uint32_t resource) override { Wait(LastUse(resource), WaitFor::Resource, "resource"); }
 
 private:
     Batch* NewBatch() {
@@ -376,6 +376,20 @@ private:
         cur_->cmds.push_back(c);
     }
 
+    // the batch that last read a resource: by its header, or by its memory for a texture, whose surfaces (the
+    // headers a title locks to write a level) are other objects over the same memory
+    uint64_t LastUse(uint32_t resource) {
+        if (!resource) return 0;
+        uint64_t id = 0;
+        if (auto it = last_use_.find(resource); it != last_use_.end()) id = it->second;
+        if (auto it = last_data_use_.find(mem::VirtualFromPhysical(kernel::R32(resource + 4))); it != last_data_use_.end())
+            id = std::max(id, it->second);
+        return id;
+    }
+    void UseData(uint32_t header) {
+        if (header) last_data_use_[mem::VirtualFromPhysical(kernel::R32(header + 4))] = cur_->id;
+    }
+
     // resources by guest header: the batch that last read them
     void Use(uint32_t header) {
         if (!header) return;
@@ -498,6 +512,7 @@ private:
     Batch* cur_ = nullptr;
     State sent_;  // the state as the render thread will have it
     std::unordered_map<uint32_t, uint64_t> last_use_;
+    std::unordered_map<uint32_t, uint64_t> last_data_use_;  // textures by the guest memory they read
     std::unordered_set<uint32_t> written_;  // surfaces drawn since their last read-back, by data address
     std::unordered_set<uint64_t> logged_;   // perf diagnostic: read-backs named once, by address and kind
     uint64_t next_id_ = 0, last_present_ = 0;

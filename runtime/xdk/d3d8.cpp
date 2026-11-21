@@ -427,6 +427,9 @@ HLE_STDCALL(D3D_BlockOnResource, 1) {
                 }
                 LOGI("d3d: BlockOnResource on surface %08X, stack %08X %08X %08X %08X", data, code[0], code[1], code[2], code[3]);
             }
+            // draws still queued read the memory the title is about to write: a title that refills one texture
+            // between draws (Crimson Skies' menu text) would have them take the new contents
+            g_backend->WaitResource(res);
             g_backend->Sync(data, 0);
         } else {
             g_backend->WaitResource(res);
