@@ -340,6 +340,7 @@ struct Tex {
     uint32_t levels = 1;
     uint64_t sig = 0;
     uint64_t frame = 0;
+    uint64_t epoch = 0;  // the lock epoch at the last change check
     uint64_t palette = 0;  // hash of the colours a P8 texture was decoded with
     uint8_t flags = 0;  // Extension::Decoded's
     const Tex* swap = nullptr;  // the texture pack's image drawn in its place
@@ -1861,9 +1862,12 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
     uint32_t total = TotalSize(d);
     bool same = SameTexture(tx, d);
     if (!same && !CreateTexture(tx, d, fi, key)) return nullptr;
-    // cheap change check once per frame: lock epochs plus a sample of the bytes
-    if (tx.frame != presents_ + 1 || !same || tx.palette != palette.hash) {
+    // cheap change check once per frame, and again after a lock: a title that refills one texture between draws
+    // (Crimson Skies draws each line of menu text through the same one) locks it each time
+    uint64_t epoch = DirtyEpoch(d.data);
+    if (tx.frame != presents_ + 1 || !same || tx.palette != palette.hash || tx.epoch != epoch) {
         tx.frame = presents_ + 1;
+        tx.epoch = epoch;
         tx.palette = palette.hash;
         const uint8_t* p = static_cast<const uint8_t*>(kernel::HostPtr(d.data));
         auto perf_t = PerfClock::now();
