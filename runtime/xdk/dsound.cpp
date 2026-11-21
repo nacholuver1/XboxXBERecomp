@@ -166,6 +166,10 @@ X86Func* Find(uint32_t guest);
 #define SYM_DirectSoundGetSampleTime FFFFFF22
 #define HAS_DirectSoundGetSampleTime 0
 #endif
+#ifndef SYM_IDirectSoundBuffer_SetNotificationPositions
+#define SYM_IDirectSoundBuffer_SetNotificationPositions FFFFFF23
+#define HAS_IDirectSoundBuffer_SetNotificationPositions 0
+#endif
 
 namespace {
 
@@ -238,6 +242,9 @@ struct Voice {
     float p[3] = {}, min_dist = 1, max_dist = 1e9f;
     Gains gain = {};  // the last block's gains, the next block ramps from them
     bool has_gain = false;
+    // DSBPOSITIONNOTIFY: byte offset in the buffer and the event set as the play cursor passes it;
+    // offset DSBPN_OFFSETSTOP sets its event when the buffer stops
+    std::vector<std::pair<uint32_t, uint32_t>> notify;
     // a mono 3D voice's interaural delay in samples and its recent samples
     float itd = 0;
     float ear[kEarLength] = {};
@@ -730,13 +737,31 @@ void MixVoice(Voice& v, float* bins, uint32_t frames) {
     v.itd = itd;
 }
 
+constexpr uint32_t kOffsetStop = 0xFFFFFFFF;  // DSBPN_OFFSETSTOP
+
+// the buffer's play cursor as a byte offset in the buffer
+uint32_t CursorBytes(const Voice& v) { return v.play_start + BytesOf(v, uint32_t(v.pos)); }
+
+// sets the events of the offsets in [from, to), wrapped past the loop end when to < from, and the stop events
+void Notify(Voice& v, uint32_t from, uint32_t to, bool stopped) {
+    bool wrapped = !stopped && to < from;
+    for (auto& [off, ev] : v.notify) {
+        bool hit = off == kOffsetStop ? stopped : wrapped ? (off >= from || off < to) : (off >= from && off < to);
+        if (hit)
+            if (ObjectRef e = FromHandle(ev)) SetEvent(*e);
+    }
+}
+
 void Render(float* out, uint32_t frames) {
     static std::vector<float> bins;  // the output thread alone renders
     bins.assign(size_t(frames) * kBins, 0.0f);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     for (auto& [obj, v] : g_voices) {
         if (v.paused || v.sync || (!v.stream && !v.playing)) continue;
+        bool notifies = !v.stream && !v.notify.empty();
+        uint32_t from = notifies ? CursorBytes(v) : 0;
         MixVoice(v, bins.data(), frames);
+        if (notifies) Notify(v, from, v.playing ? CursorBytes(v) : v.play_start + v.play_len, !v.playing);
     }
     if (dsp::Loaded()) dsp::Run(bins.data(), frames);
     // the speaker bins in their order, the output folds them for the device
@@ -898,7 +923,7 @@ static void AuditExports() {
         SYM(IDirectSound_DownloadEffectsImage), SYM(IDirectSound_GetEffectData), SYM(IDirectSound_CommitEffectData),
         SYM(IDirectSound_GetOutputLevels), SYM(IDirectSoundBuffer_SetPlayRegion), SYM(IDirectSoundBuffer_SetAllParameters),
         SYM(IDirectSoundBuffer_SetFormat), SYM(IDirectSoundBuffer_SetOutputBuffer), SYM(IDirectSoundBuffer_SetRolloffCurve),
-        SYM(IDirectSoundBuffer_StopEx), SYM(IDirectSoundBuffer_Pause), SYM(IDirectSoundBuffer_SetEG),
+        SYM(IDirectSoundBuffer_StopEx), SYM(IDirectSoundBuffer_SetNotificationPositions), SYM(IDirectSoundBuffer_Pause), SYM(IDirectSoundBuffer_SetEG),
         SYM(XAudioDownloadEffectsImage), SYM(DirectSoundCreateBuffer), SYM(IDirectSound_CreateSoundBuffer),
         SYM(IDirectSoundBuffer_Release), SYM(IDirectSoundBuffer_Unlock), SYM(IDirectSoundBuffer_SetBufferData),
         SYM(IDirectSoundBuffer_Play), SYM(IDirectSoundBuffer_Stop), SYM(IDirectSoundBuffer_SetLoopRegion),
@@ -1196,12 +1221,20 @@ BUFFER(Play, 4) {
     return 0;
 }
 BUFFER(Stop, 1) {
+    if (v.playing) Notify(v, 0, 0, true);
     v.playing = false;
     return 0;
 }
 // (this, time low, time high, flags): stops now, the release envelope is not reproduced
 BUFFER(StopEx, 4) {
+    if (v.playing) Notify(v, 0, 0, true);
     v.playing = false;
+    return 0;
+}
+// (this, count, DSBPOSITIONNOTIFY array): replaces the buffer's notifications, none for a count of 0
+BUFFER(SetNotificationPositions, 3) {
+    v.notify.clear();
+    for (uint32_t i = 0; i < a[1]; i++) v.notify.push_back({R32(a[2] + i * 8), R32(a[2] + i * 8 + 4)});
     return 0;
 }
 // (this, flags): 0 resumes, 1 pauses, 2 holds until IDirectSound_SynchPlayback
