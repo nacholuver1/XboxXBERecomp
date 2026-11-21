@@ -14,6 +14,13 @@ namespace fs = std::filesystem;
 
 namespace logx {
 
+#ifdef NDEBUG
+const bool kVerbose = [] {
+    const char* v = std::getenv("XBE_LOG");
+    return v && *v && *v != '0';
+}();
+#endif
+
 static std::mutex g_mutex;
 static FILE* g_file = nullptr;
 static std::string g_path;

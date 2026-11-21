@@ -452,6 +452,7 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
     (void)options;
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, 1);
+    LOG_FIRST(400, "open %s%s", name.c_str(), f->dir ? " (folder)" : "");
     return kSuccess;
 }
 
@@ -490,6 +491,8 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
         if (done < chunk) break;
     }
     f->pos = pos + n;
+    if (n < len) LOG_FIRST(200, "%s %s: %u of %u bytes at %llu", write ? "write" : "read", f->xbox.c_str(), n, len,
+                           (unsigned long long)pos);
     if (write && n < len) return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
     if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);
     return Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb);
@@ -651,6 +654,8 @@ KERNEL_EXPORT(207, NtQueryDirectoryFile, 10) {
         }
         f->next = 0;
         f->listed = true;
+        LOG_FIRST(200, "list %s %s: %zu entries", f->xbox.c_str(), pat.c_str(),
+                  f->entry ? f->disc_entries.size() : f->entries.size());
     }
     if (f->next >= (f->entry ? f->disc_entries.size() : f->entries.size())) {
         IoStatus(iosb, kNoMoreFiles, 0);

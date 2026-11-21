@@ -16,7 +16,8 @@ void Flush();
 const std::string& Path();
 
 #ifdef NDEBUG
-inline constexpr bool kVerbose = false;
+// a release build logs errors only; XBE_LOG=1 in the environment makes it log every level, as a debug build does
+extern const bool kVerbose;
 #else
 inline constexpr bool kVerbose = true;
 #endif
