@@ -634,7 +634,9 @@ KERNEL_EXPORT(207, NtQueryDirectoryFile, 10) {
         LOG_FIRST(8, "NtQueryDirectoryFile: class %u", cls);
         return kInvalidParameter;
     }
-    std::string pat = mask ? ReadAnsiString(mask) : "*";
+    // no mask, or an empty one, lists everything (Crimson Skies indexes the disc root with an empty mask)
+    std::string pat = mask ? ReadAnsiString(mask) : "";
+    if (pat.empty()) pat = "*";
     if (!f->listed || (restart & 0xFF)) {
         f->entries.clear();
         f->disc_entries.clear();
