@@ -341,6 +341,8 @@ struct Tex {
     uint64_t sig = 0;
     uint64_t frame = 0;
     uint64_t epoch = 0;  // the lock epoch at the last change check
+    uint64_t diag_hash = 0;  // XBE_LOG: the whole bytes at the frame's last bind, to report a refill without a lock
+    bool diag_told = false;
     uint64_t palette = 0;  // hash of the colours a P8 texture was decoded with
     uint8_t flags = 0;  // Extension::Decoded's
     const Tex* swap = nullptr;  // the texture pack's image drawn in its place
@@ -1865,6 +1867,17 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
     // cheap change check once per frame, and again after a lock: a title that refills one texture between draws
     // (Crimson Skies draws each line of menu text through the same one) locks it each time
     uint64_t epoch = DirtyEpoch(d.data);
+    if (logx::kVerbose && same) {
+        // diagnostic: a texture bound again in the same frame whose bytes changed, with or without a lock between
+        uint64_t whole = Hash(kernel::HostPtr(d.data), total);
+        if (tx.frame == presents_ + 1 && whole != tx.diag_hash && !tx.diag_told) {
+            tx.diag_told = true;
+            LOG_FIRST(64, "gpu: texture %08X (%ux%u format %02X, %u bytes) changed between two draws of one frame, %s",
+                      d.data, d.width, d.height, d.format, total,
+                      tx.epoch != epoch ? "locked between them" : "NOT locked between them");
+        }
+        tx.diag_hash = whole;
+    }
     if (tx.frame != presents_ + 1 || !same || tx.palette != palette.hash || tx.epoch != epoch) {
         tx.frame = presents_ + 1;
         tx.epoch = epoch;
