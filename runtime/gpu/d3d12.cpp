@@ -2029,6 +2029,11 @@ D3D12_SAMPLER_DESC StageSampler(const State& s, int i, const DrawTextures& stage
                                          : D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT;
         sd.ComparisonFunc = Cmp(s.rs[kRsShadowFunc]);
         sd.MaxAnisotropy = 0;
+        // the border is a depth the sampler compares as it stands: in reversed depth it reverses too, or a white
+        // border (the far plane, as titles set it so nothing outside the map is shadowed) tests as the near plane and
+        // shadows everything around the map (Crimson Skies' plane shadow over water drew a black frame around it)
+        if (g_reversed_depth)
+            for (float& c : sd.BorderColor) c = 1.0f - c;
     }
     return sd;
 }
@@ -2504,8 +2509,9 @@ void D3D12Backend::CaptureTextures(const State& s, const DrawTextures& stages) {
         TextureDesc d;
         if (!s.textures[size_t(i)] || !Describe(s.textures[size_t(i)], d)) continue;
         bool tg = targets_.count(SizedTargetKey(d.data, Format(d.format).depth, d.width, d.height));
-        fprintf(cap_, " | t%d %08X fmt %X %ux%u%s%s", i, d.data, d.format, d.width, d.height, tg ? " target" : "",
-                res ? "" : " unbound");
+        fprintf(cap_, " | t%d %08X fmt %X %ux%u%s%s addr %u/%u border %08X", i, d.data, d.format, d.width, d.height,
+                tg ? " target" : "", res ? "" : " unbound", s.tss[size_t(i)][kTssAddressU], s.tss[size_t(i)][kTssAddressV],
+                s.tss[size_t(i)][kTssBorderColor]);
         if (res && !tg && stages.info[i].kind == kTex2D && cap_seen_.insert(d.data).second) {
             cap_tex_.push_back({res, stages.sv[i].Format, d.data, d.width, d.height});
         }
