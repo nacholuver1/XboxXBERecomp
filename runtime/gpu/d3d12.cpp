@@ -1867,7 +1867,9 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
     // cheap change check once per frame, and again after a lock: a title that refills one texture between draws
     // (Crimson Skies draws each line of menu text through the same one) locks it each time
     uint64_t epoch = DirtyEpoch(d.data);
-    if (logx::kVerbose && same) {
+    // XBE_TEXTURE_DIAG (with XBE_LOG): hashes every texture whole at every bind, so it is off unless asked for
+    static const bool texture_diag = logx::kVerbose && std::getenv("XBE_TEXTURE_DIAG");
+    if (texture_diag && same) {
         // diagnostic: a texture bound again in the same frame whose bytes changed, with or without a lock between
         uint64_t whole = Hash(kernel::HostPtr(d.data), total);
         if (tx.frame == presents_ + 1 && whole != tx.diag_hash && !tx.diag_told) {
