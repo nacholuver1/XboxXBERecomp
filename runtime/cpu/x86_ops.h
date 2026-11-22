@@ -67,6 +67,9 @@ struct X86Resume {
     uint32_t target, esp;
 };
 X86_HOST_API void x86_resume(X86Context& ctx, uint8_t* base, const X86Resume& r);
+// resumes r in the frame whose esp was frame, again for each later jump back into that frame (a longjmp from the
+// resumed code to the same setjmp), and rethrows a jump to an outer frame
+X86_HOST_API void x86_resume_in(X86Context& ctx, uint8_t* base, X86Resume r, uint32_t frame);
 X86_HOST_API void x86_kernel(X86Context& ctx, uint8_t* base, uint32_t ordinal);
 [[noreturn]] X86_HOST_API void x86_trap(X86Context& ctx, uint32_t va, const char* what);
 X86_HOST_API void x86_priv(X86Context& ctx, uint32_t va, const char* what);

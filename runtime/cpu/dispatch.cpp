@@ -156,6 +156,20 @@ void x86_resume(X86Context& ctx, uint8_t* base, const X86Resume& r) {
     dispatch::Find(r.target)(ctx, base);
 }
 
+// the resumed code runs inside the frame's catch block, where a second jump to the same frame would not be caught
+// by that frame's try any more (Crimson Skies: a longjmp back to the respawn setjmp after dying a second time)
+void x86_resume_in(X86Context& ctx, uint8_t* base, X86Resume r, uint32_t frame) {
+    for (;;) {
+        try {
+            x86_resume(ctx, base, r);
+            return;
+        } catch (const X86Resume& next) {
+            if (next.esp >= frame) throw;
+            r = next;
+        }
+    }
+}
+
 void x86_kernel(X86Context& ctx, uint8_t* base, uint32_t ordinal) {
     if (ordinal < 400 && g_exports[ordinal].fn) {
         g_exports[ordinal].fn(ctx, base);
