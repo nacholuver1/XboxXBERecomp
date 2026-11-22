@@ -30,6 +30,7 @@ struct Settings {
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
     uint32_t audio_output = 0;         // audio::kOutputAuto, Stereo, Surround or Mono
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
+    std::string game_path;                 // the game: a disc image (.iso) or a folder with the xbe; empty: assets
 };
 
 Settings& Get();
@@ -55,6 +56,10 @@ struct GameFiles {
     std::vector<uint8_t> xbe;
 };
 bool FindGame(GameFiles& game);
+// what a disc image or game folder holds, for a launcher to show before the game starts
+enum class GameProbe { Missing, Match, OtherRelease };
+GameProbe ProbeGame(const std::filesystem::path& path);
+std::filesystem::path DefaultGamePath();  // the assets folder beside the exe or above it, empty without one
 std::string Sha1(const std::vector<uint8_t>& data);  // lower case hex
 // the recompiled code, <exe>.dll, built from the game in assets when missing or out of date (game_code.cpp) and
 // loaded; false after telling the player why the game cannot start, or when they chose not to start it yet

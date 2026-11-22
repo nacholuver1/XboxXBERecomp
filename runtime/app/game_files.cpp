@@ -70,17 +70,61 @@ std::string Sha1(const std::vector<uint8_t>& data) {
     return hex;
 }
 
-bool FindGame(GameFiles& game) {
-    fs::path assets = FindAssets();
-    std::vector<fs::path> isos;
+namespace {
+
+bool IsIso(const fs::path& p) {
+    std::wstring ext = p.extension().wstring();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return wchar_t(std::towlower(c)); });
+    return ext == L".iso";
+}
+
+// the folder the game's files are read from and the disc images to try, in order: game_path when set (an image
+// itself, or a folder and the images in it), else the assets folder
+void GameSources(fs::path& dir, std::vector<fs::path>& isos) {
     std::error_code ec;
-    if (!assets.empty())
-        for (auto& e : fs::directory_iterator(assets, ec)) {
-            std::wstring ext = e.path().extension().wstring();
-            std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return wchar_t(std::towlower(c)); });
-            if (ext == L".iso" && e.is_regular_file(ec)) isos.push_back(e.path());
-        }
+    dir.clear();
+    isos.clear();
+    fs::path chosen = Get().game_path.empty() ? fs::path() : fs::u8path(Get().game_path);
+    if (!chosen.empty() && fs::is_regular_file(chosen, ec)) {
+        dir = chosen.parent_path();
+        if (IsIso(chosen)) isos.push_back(chosen);
+        return;
+    }
+    dir = !chosen.empty() && fs::is_directory(chosen, ec) ? chosen : FindAssets();
+    if (dir.empty()) return;
+    for (auto& e : fs::directory_iterator(dir, ec))
+        if (IsIso(e.path()) && e.is_regular_file(ec)) isos.push_back(e.path());
     std::sort(isos.begin(), isos.end());
+}
+
+}  // namespace
+
+fs::path DefaultGamePath() { return FindAssets(); }
+
+GameProbe ProbeGame(const fs::path& path) {
+    std::error_code ec;
+    std::vector<uint8_t> xbe;
+    bool found = false;
+    if (fs::is_directory(path, ec)) {
+        found = ReadHostFile(path / IMAGE_XBE, xbe);
+        if (!found)
+            for (auto& e : fs::directory_iterator(path, ec))
+                if (IsIso(e.path()) && ProbeGame(e.path()) == GameProbe::Match) return GameProbe::Match;
+    } else if (IsIso(path)) {
+        kernel::Disc disc;
+        std::string error;
+        found = disc.Open(path, error) && disc.Load(IMAGE_XBE, xbe);
+    } else if (path.filename() == IMAGE_XBE) {
+        found = ReadHostFile(path, xbe);
+    }
+    if (!found) return GameProbe::Missing;
+    return Runs(Sha1(xbe)) ? GameProbe::Match : GameProbe::OtherRelease;
+}
+
+bool FindGame(GameFiles& game) {
+    fs::path assets;
+    std::vector<fs::path> isos;
+    GameSources(assets, isos);
 
     // the first copy with this xbe wins, the extracted files before any image; another release is kept to offer
     GameFiles other;
