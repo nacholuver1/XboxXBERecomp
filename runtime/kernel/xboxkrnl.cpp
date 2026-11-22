@@ -1,8 +1,12 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <ctime>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 
 #include "app/app.h"
 #include "kernel/crypto.h"
@@ -116,6 +120,39 @@ void InitKernelData() {
 }
 
 // critical sections
+//
+// The lock is kept on the host, by the section's guest address: owner, recursion and a condition variable under one
+// mutex. The guest's own fields (LockCount, RecursionCount, OwningThread) are written from that state for any code
+// that reads them, but nothing is decided from them. The embedded event was the previous wait object; it was found
+// through a stamp in the section's WaitListHead, and a waiter could pass on a signal meant for another, leaving a
+// held section with no owner (Crimson Skies: High Road to Revenge froze on a loading screen with LockCount 4976,
+// RecursionCount 1, OwningThread 0 and the owner waiting on its own section).
+
+namespace {
+
+struct CritSec {
+    std::mutex m;
+    std::condition_variable cv;
+    uint32_t owner = 0, recursion = 0, waiters = 0;
+};
+
+CritSec& CritSecAt(uint32_t cs) {
+    static std::mutex lock;
+    static std::unordered_map<uint32_t, std::unique_ptr<CritSec>> sections;
+    std::lock_guard<std::mutex> g(lock);
+    auto& p = sections[cs];
+    if (!p) p = std::make_unique<CritSec>();
+    return *p;
+}
+
+// LockCount counts every enter, recursive ones and waiters included, from -1 for a free section, as NT does
+void PublishCritSec(uint32_t cs, const CritSec& s) {
+    W32(cs + 0x10, s.owner ? s.recursion + s.waiters - 1 : s.waiters ? s.waiters - 1 : 0xFFFFFFFFu);
+    W32(cs + 0x14, s.recursion);
+    W32(cs + 0x18, s.owner);
+}
+
+}  // namespace
 
 KERNEL_EXPORT(291, RtlInitializeCriticalSection, 1) {
     uint32_t cs = a[0];
@@ -126,58 +163,67 @@ KERNEL_EXPORT(291, RtlInitializeCriticalSection, 1) {
     W32(cs + 4, 0);
     W32(cs + 8, cs + 8);  // empty WaitListHead
     W32(cs + 12, cs + 8);
-    W32(cs + 0x10, 0xFFFFFFFF);  // LockCount
-    W32(cs + 0x14, 0);           // RecursionCount
-    W32(cs + 0x18, 0);           // OwningThread
+    CritSec& s = CritSecAt(cs);
+    std::lock_guard<std::mutex> l(s.m);
+    s.owner = s.recursion = 0;
+    PublishCritSec(cs, s);
     return 0;
 }
 
 KERNEL_EXPORT(277, RtlEnterCriticalSection, 1) {
     uint32_t cs = a[0];
     uint32_t me = Current()->ethread;
-    auto* lock_count = reinterpret_cast<int32_t*>(HostPtr(cs + 0x10));
-    if (__atomic_add_fetch(lock_count, 1, __ATOMIC_SEQ_CST) == 0) {
-        W32(cs + 0x18, me);
-        W32(cs + 0x14, 1);
+    CritSec& s = CritSecAt(cs);
+    std::unique_lock<std::mutex> l(s.m);
+    if (s.owner == me) {
+        s.recursion++;
+        PublishCritSec(cs, s);
         return 0;
     }
-    if (R32(cs + 0x18) == me) {
-        W32(cs + 0x14, R32(cs + 0x14) + 1);
-        return 0;
+    if (s.owner) {
+        s.waiters++;
+        PublishCritSec(cs, s);
+        while (s.owner) {
+            // bounded, so a suspended thread is held at its suspend point and not inside the section's mutex
+            s.cv.wait_for(l, std::chrono::milliseconds(50));
+            if (s.owner) {
+                l.unlock();
+                SuspendPoint();
+                l.lock();
+            }
+        }
+        s.waiters--;
     }
-    ObjectRef ev = FromPointer(cs);
-    Wait({ev}, false, INT64_MAX, false);
-    W32(cs + 0x18, me);
-    W32(cs + 0x14, 1);
+    s.owner = me;
+    s.recursion = 1;
+    PublishCritSec(cs, s);
     return 0;
 }
 
 KERNEL_EXPORT(294, RtlLeaveCriticalSection, 1) {
     uint32_t cs = a[0];
-    auto* lock_count = reinterpret_cast<int32_t*>(HostPtr(cs + 0x10));
-    uint32_t rec = R32(cs + 0x14) - 1;
-    W32(cs + 0x14, rec);
-    if (rec) {
-        __atomic_sub_fetch(lock_count, 1, __ATOMIC_SEQ_CST);
-        return 0;
+    uint32_t me = Current()->ethread;
+    CritSec& s = CritSecAt(cs);
+    std::lock_guard<std::mutex> l(s.m);
+    if (s.owner != me) LOG_FIRST(16, "RtlLeaveCriticalSection %08X by %08X, owned by %08X", cs, me, s.owner);
+    if (!s.recursion) return 0;
+    if (--s.recursion == 0) {
+        s.owner = 0;
+        s.cv.notify_one();
     }
-    W32(cs + 0x18, 0);
-    if (__atomic_sub_fetch(lock_count, 1, __ATOMIC_SEQ_CST) >= 0) SetEvent(*FromPointer(cs));
+    PublishCritSec(cs, s);
     return 0;
 }
 
 KERNEL_EXPORT(306, RtlTryEnterCriticalSection, 1) {
     uint32_t cs = a[0];
     uint32_t me = Current()->ethread;
-    int32_t idle = -1;  // LockCount of a free section
-    if (__atomic_compare_exchange_n(reinterpret_cast<int32_t*>(HostPtr(cs + 0x10)), &idle, 0, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
-        W32(cs + 0x18, me);
-        W32(cs + 0x14, 1);
-        return 1;
-    }
-    if (R32(cs + 0x18) != me) return 0;
-    __atomic_add_fetch(reinterpret_cast<int32_t*>(HostPtr(cs + 0x10)), 1, __ATOMIC_SEQ_CST);
-    W32(cs + 0x14, R32(cs + 0x14) + 1);
+    CritSec& s = CritSecAt(cs);
+    std::lock_guard<std::mutex> l(s.m);
+    if (s.owner && s.owner != me) return 0;
+    s.owner = me;
+    s.recursion++;
+    PublishCritSec(cs, s);
     return 1;
 }
 
