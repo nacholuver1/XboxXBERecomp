@@ -114,11 +114,30 @@ bool CaptureOn() {
 }
 
 const char* kBlitHlsl = R"(
-cbuffer B : register(b1) { float4 uvrect; float4 opts; };
+cbuffer B : register(b1) { float4 uvrect; float4 opts; float4 opts2; };
 Texture2D img : register(t0);
 Texture2D lut : register(t1);
 SamplerState ls : register(s0);
 SamplerState ps : register(s1);
+float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
+float3 tap(float2 uv) { return img.SampleLevel(ls, uv, 0).rgb; }
+// FXAA (opts2.x), after Timothy Lottes' fast approximate anti-aliasing: where the local luma contrast is high, blend
+// along the edge's direction, found from the diagonal neighbours; t is the source's texel size (opts2.yz)
+float3 fxaa(float2 uv, float2 t) {
+    float3 m = tap(uv);
+    float lm = luma(m);
+    float lnw = luma(tap(uv + float2(-t.x, -t.y))), lne = luma(tap(uv + float2(t.x, -t.y)));
+    float lsw = luma(tap(uv + float2(-t.x, t.y))), lse = luma(tap(uv + float2(t.x, t.y)));
+    float lo = min(lm, min(min(lnw, lne), min(lsw, lse))), hi = max(lm, max(max(lnw, lne), max(lsw, lse)));
+    if (hi - lo < max(0.0312, hi * 0.125)) return m;
+    float2 d = float2(-((lnw + lne) - (lsw + lse)), (lnw + lsw) - (lne + lse));
+    float reduce = max((lnw + lne + lsw + lse) * (0.25 * 0.125), 1.0 / 128.0);
+    d = clamp(d / (min(abs(d.x), abs(d.y)) + reduce), -8.0, 8.0) * t;
+    float3 a = 0.5 * (tap(uv + d * (1.0 / 3.0 - 0.5)) + tap(uv + d * (2.0 / 3.0 - 0.5)));
+    float3 b = a * 0.5 + 0.25 * (tap(uv - d * 0.5) + tap(uv + d * 0.5));
+    float lb = luma(b);
+    return lb < lo || lb > hi ? a : b;
+}
 struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
 O vs(uint id : SV_VertexID) {
     O o;
@@ -132,7 +151,10 @@ float4 psmain(O i) : SV_Target {
     int n = max((int)opts.z, 1);
     float2 px = fwidth(i.uv);
     for (int y = 0; y < n; y++)
-        for (int x = 0; x < n; x++) c += img.SampleLevel(ls, i.uv + px * ((float2(x, y) + 0.5) / n - 0.5), 0);
+        for (int x = 0; x < n; x++) {
+            float2 uv = i.uv + px * ((float2(x, y) + 0.5) / n - 0.5);
+            c += opts2.x > 0 ? float4(fxaa(uv, opts2.yz), img.SampleLevel(ls, uv, 0).a) : img.SampleLevel(ls, uv, 0);
+        }
     c /= n * n;
     c.rgb *= opts.w;
     if (opts.x > 0) c.rgb = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
@@ -390,6 +412,7 @@ struct BlitOptions {
     float mul = 1;            // colour scale
     DXGI_FORMAT rtv = kBgra;  // the target's format
     bool over = false;        // premultiplied over the target, which keeps its alpha
+    bool fxaa = false;        // FXAA in the source's texels, in each box tap
 };
 
 // Shrink's settings past the source and the size
@@ -1417,8 +1440,10 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
     dev_->CreateShaderResourceView(lut_.Get(), &sv, Cpu(srv_heap_.Get(), slot + 1, srv_inc_));
     uint32_t si = EnsureBlitSamplers();
     Alloc cb = Upload(256, 256);
-    float c[8] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
-                  o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul};
+    D3D12_RESOURCE_DESC sd = src->GetDesc();
+    float c[12] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
+                   o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul,
+                   o.fxaa ? 1.0f : 0.0f, 1.0f / float(sd.Width), 1.0f / float(sd.Height), 0.0f};
     std::memcpy(cb.cpu, c, sizeof(c));
     DrawFullScreen(EnsureBlitPipeline(o.rtv, o.over), cb.gpu, slot, si);
 }
@@ -3276,7 +3301,7 @@ void D3D12Backend::BlitFrame(Target& t) {
     cl_->RSSetScissorRects(1, &scissor);
     binds_ = {};
     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_});
+    Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_, .fxaa = app::Get().fxaa});
 }
 
 void D3D12Backend::RenderUi() {
