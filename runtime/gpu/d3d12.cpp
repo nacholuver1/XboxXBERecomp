@@ -3301,7 +3301,10 @@ void D3D12Backend::BlitFrame(Target& t) {
     cl_->RSSetScissorRects(1, &scissor);
     binds_ = {};
     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_, .fxaa = app::Get().fxaa});
+    // a frame rendered above the output's size (render_percent over 100) is averaged down over a box of its texels
+    // per pixel, which is what makes it supersampling; one bilinear tap would skip most of them
+    uint32_t taps = uint32_t(std::clamp(std::lround(float(t.res->GetDesc().Height) / vh), 1l, 4l));
+    Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_, .taps = taps, .fxaa = app::Get().fxaa});
 }
 
 void D3D12Backend::RenderUi() {
