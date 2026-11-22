@@ -478,7 +478,28 @@ const char* kPsSbyte = R"(
 // unorm to byte b, less lo under 128 or hi from 128, over d
 float3 sbyte(float3 u, float lo, float hi, float d) { float3 b = u * 255; return (b - (b >= 128 ? hi : lo)) / d; }
 )";
-const char* kPsTail = R"(float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
+const char* kPsTail = R"(// a texel of a video frame, deinterlaced: a row that differs from both its neighbours the same way is a comb from
+// the other field, and is blended with them; elsewhere the texel is left as it is
+float4 vtexel(Texture2D t, int2 p, int2 hi) {
+    float4 c = t.Load(int3(clamp(p, 0, hi), 0));
+    float4 u = t.Load(int3(clamp(p - int2(0, 1), 0, hi), 0)), d = t.Load(int3(clamp(p + int2(0, 1), 0, hi), 0));
+    float3 a = c.rgb - u.rgb, b = c.rgb - d.rgb;
+    float comb = dot(a * b, float3(0.299, 0.587, 0.114));
+    return comb > 0.001 ? (u + 2 * c + d) * 0.25 : c;
+}
+// upscale (kTexUpscale): Catmull-Rom bicubic over 4x4 texels, read directly so the stage's sampler does not matter
+float4 upscale(Texture2D t, float2 uv, float2 size) {
+    float2 sp = uv * size - 0.5, f = frac(sp);
+    int2 b = int2(floor(sp)) - 1, hi = int2(size) - 1;
+    float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f)), w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);
+    float wx[4] = {w0.x, w1.x, w2.x, w3.x}, wy[4] = {w0.y, w1.y, w2.y, w3.y};
+    float4 c = 0;
+    for (int y = 0; y < 4; y++)
+        for (int x = 0; x < 4; x++) c += vtexel(t, b + int2(x, y), hi) * (wx[x] * wy[y]);
+    return saturate(c);
+}
+float4 spreadtap(Texture2D t, SamplerState s, float2 uv, float4 w, float m) {
     float4 c = 0;
     int n = (int)w.z;
     for (int y = 0; y < n; y++)
@@ -997,6 +1018,8 @@ std::string PixelHlsl(const PixelKey& k) {
                         F(", tc%d.z / tc%d.w, %d, i.pos.xy, texsize[%d].xy);\n", i, i, t.shadow, i);
             else if (t.kind == kTex2D && (t.flags & kTexWide))
                 body += F("float4 t%d = spreadtap(tex%d, smp%d, %s, spread[%d], %s);\n", i, i, i, uv.c_str(), i, Hooks().ReadScale(t).c_str());
+            else if (t.kind == kTex2D && (t.flags & kTexUpscale))
+                body += F("float4 t%d = upscale(tex%d, %s, texsize[%d].xy);\n", i, i, uv.c_str(), i);
             else if (t.kind == kTex2D) body += F("float4 t%d = tex%d.Sample(smp%d, %s);\n", i, i, i, uv.c_str());
             else if (t.kind == kTexCube && !(cube = Hooks().Cube(t, i, F("tc%d.xyz", i))).empty()) body += F("float4 t%d = %s;\n", i, cube.c_str());
             else if (t.kind) body += F("float4 t%d = tex%d.Sample(smp%d, tc%d.xyz);\n", i, i, i, i);

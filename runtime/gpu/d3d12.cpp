@@ -1922,6 +1922,10 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
             tx.pack_gen = 0;
         }
     }
+    // a large linear 32 bit image magnified on screen is a video frame or a still: the shader upscales it
+    if (app::Get().upscale_videos && scale_ > 1.2f && (d.format == 0x1E || d.format == 0x12) && d.width >= 320 &&
+        d.height >= 240)
+        info.flags |= kTexUpscale;
     if (tx.pack_gen != texturedumper::Generation()) LatchPackKey(tx, d, fi, colours);
     if (tx.pack_key) LatchPackImage(tx);
     const Tex& drawn = tx.swap ? *tx.swap : tx;
