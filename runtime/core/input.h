@@ -16,5 +16,7 @@ uint16_t HeldOnAnyController();  // face buttons as XINPUT_GAMEPAD_A/B/X/Y masks
 // the controller on that port, then GameInfo::pad
 Pad Poll(int port);
 void Rumble(int port, uint16_t left, uint16_t right);
+// the trigger motors of a controller that has them (Xbox One / Series: impulse triggers), for ms; false without
+bool RumbleTriggers(int port, uint16_t left, uint16_t right, uint32_t ms);
 
 }  // namespace input

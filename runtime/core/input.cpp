@@ -133,4 +133,9 @@ void Rumble(int port, uint16_t left, uint16_t right) {
     if (port >= 0 && port < 4 && g_pads[port]) SDL_RumbleGamepad(g_pads[port], left, right, 0);
 }
 
+bool RumbleTriggers(int port, uint16_t left, uint16_t right, uint32_t ms) {
+    std::lock_guard lock(g_lock);
+    return port >= 0 && port < 4 && g_pads[port] && SDL_RumbleGamepadTriggers(g_pads[port], left, right, ms);
+}
+
 }  // namespace input
