@@ -58,6 +58,7 @@ void Load() {
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     s.game_path = t["game_path"].value_or(s.game_path);
     s.audio_output = std::min(t["audio_output"].value_or(s.audio_output), audio::kOutputMono);
+    s.language = std::clamp(t["language"].value_or(s.language), 1u, 8u);
     for (const Option& o : kGame.options) {
         if (o.flag) *o.flag = t[o.key].value_or(*o.flag);
         else *o.value = t[o.key].value_or(*o.value);
@@ -84,7 +85,8 @@ toml::table Table() {
                   {"texture_dump_format", int64_t(s.texture_dump_format)},
                   {"join_ip", s.join_ip},
                   {"game_path", s.game_path},
-                  {"audio_output", int64_t(s.audio_output)}};
+                  {"audio_output", int64_t(s.audio_output)},
+                  {"language", int64_t(s.language)}};
     for (const Option& o : kGame.options) {
         if (o.flag) t.insert(o.key, *o.flag);
         else t.insert(o.key, int64_t(*o.value));

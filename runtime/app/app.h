@@ -28,6 +28,8 @@ struct Settings {
     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
+    uint32_t language = 1;             // the console's language (XC_LANGUAGE): 1 English, 2 Japanese, 3 German,
+                                       // 4 French, 5 Spanish, 6 Italian, 7 Korean, 8 Chinese (traditional)
     uint32_t audio_output = 0;         // audio::kOutputAuto, Stereo, Surround or Mono
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
     std::string game_path;                 // the game: a disc image (.iso) or a folder with the xbe; empty: assets
