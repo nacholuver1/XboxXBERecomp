@@ -159,6 +159,12 @@ bool Widescreen() {
     return m.width * 2 >= m.height * 3;  // 3:2 or wider
 }
 
+float PresentAspect() {
+    Mode m = CachedOutput();
+    if (!m.height || m.width * 2 < m.height * 3) return 4.0f / 3.0f;
+    return std::clamp(float(m.width) / float(m.height), 16.0f / 9.0f, 32.0f / 9.0f);
+}
+
 float RenderScale(uint32_t guest_height) {
     float h = CachedOutput().height * (Get().render_percent / 100.0f);
     return guest_height ? std::max(h / guest_height, 0.1f) : 1.0f;
