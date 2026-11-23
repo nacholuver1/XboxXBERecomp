@@ -2869,9 +2869,10 @@ State SpriteStageZero(const State& s) {
 }
 
 // fit_hud: the present stretches the 4:3 frame to a wider output's shape, and with it the 2D the title draws over
-// the frame (HUD, text, menus). Each 2D draw is narrowed back to its own shape, pinned to the left edge when it sits
-// in the left third, to the right edge in the right third, else to the center. Draws across most of the width
-// (backgrounds, fades, copies of the frame) and targets of other shapes (render to texture) are left as they were.
+// the frame (HUD, text, menus). Each 2D draw is narrowed back to its own shape about the screen's center, so the 2D
+// keeps its 4:3 layout in the middle. Pinning draws to the edges split boxes made of several draws (a panel, its
+// brackets and its text) apart. Draws across most of the width (backgrounds, fades, copies of the frame) and
+// targets of other shapes (render to texture) are left as they were.
 void HudFit(const Assembled& a, GuestExtent size, float hud[4]) {
     hud[0] = 1;
     hud[1] = 0;
@@ -2879,8 +2880,7 @@ void HudFit(const Assembled& a, GuestExtent size, float hud[4]) {
     float k = (4.0f / 3.0f) / app::PresentAspect();
     float w = float(size.w);
     if (k > 0.999f || a.x_max - a.x_min >= 0.9f * w) return;
-    float mid = (a.x_min + a.x_max) * 0.5f;
-    float anchor = mid < w / 3 ? 0 : mid > w * 2 / 3 ? w : w / 2;
+    float anchor = w / 2;
     hud[0] = k;  // x' = anchor + (x - anchor) * k
     hud[1] = anchor * (1 - k);
 }

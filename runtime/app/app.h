@@ -24,7 +24,7 @@ struct Settings {
     bool vsync = true;
     uint32_t aniso = 0;              // 0 as the game asks
     bool fxaa = false;               // FXAA on the presented frame
-    bool fit_hud = true;             // wider than 4:3: 2D (HUD, menus) keeps its shape, pinned left, center or right
+    bool fit_hud = true;             // wider than 4:3: 2D (HUD, menus) keeps its shape and 4:3 layout, centered
     bool upscale_videos = true;      // video frames and stills: bicubic and deinterlaced instead of bilinear
     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
