@@ -19,6 +19,7 @@ namespace {
 std::mutex g_lock;
 bool g_sdl = false;
 SDL_Gamepad* g_pads[4] = {};
+bool g_trigger_failed[4] = {};  // the first failed trigger rumble on a port is logged
 
 void AddPad(SDL_JoystickID id) {
     for (SDL_Gamepad* pad : g_pads)
@@ -26,8 +27,21 @@ void AddPad(SDL_JoystickID id) {
     SDL_Gamepad** slot = std::find(std::begin(g_pads), std::end(g_pads), nullptr);
     if (slot == std::end(g_pads)) return;
     *slot = SDL_OpenGamepad(id);
-    const char* name = *slot ? SDL_GetGamepadName(*slot) : SDL_GetError();
-    LOGI("input: controller %d %s: %s", int(slot - g_pads) + 1, *slot ? "plugged in" : "failed to open", name ? name : "");
+    int n = int(slot - g_pads) + 1;
+    if (!*slot) {
+        LOGR("input: controller %d failed to open: %s", n, SDL_GetError());
+        return;
+    }
+    g_trigger_failed[n - 1] = false;
+    // in release logs too: players' reports need the pad and what SDL says it can do (issue #6)
+    const char* name = SDL_GetGamepadName(*slot);
+    const char* type = SDL_GetGamepadStringForType(SDL_GetGamepadType(*slot));
+    SDL_PropertiesID props = SDL_GetGamepadProperties(*slot);
+    LOGR("input: controller %d plugged in: %s (%04x:%04x, %s), rumble %s, trigger rumble %s", n, name ? name : "",
+         SDL_GetGamepadVendor(*slot), SDL_GetGamepadProduct(*slot),
+         type ? type : "unknown",
+         SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false) ? "yes" : "no",
+         SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false) ? "yes" : "no");
 }
 
 void RemovePad(SDL_JoystickID id) {
@@ -35,7 +49,7 @@ void RemovePad(SDL_JoystickID id) {
         if (!g_pads[i] || SDL_GetGamepadID(g_pads[i]) != id) continue;
         SDL_CloseGamepad(g_pads[i]);
         g_pads[i] = nullptr;
-        LOGI("input: controller %d unplugged", i + 1);
+        LOGR("input: controller %d unplugged", i + 1);
     }
 }
 
@@ -70,7 +84,7 @@ void Init() {
         return;
     }
     int v = SDL_GetVersion();
-    LOGI("input: SDL %d.%d.%d", SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v));
+    LOGR("input: SDL %d.%d.%d", SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v));
     std::lock_guard lock(g_lock);
     g_sdl = true;
     int count = 0;
@@ -135,7 +149,13 @@ void Rumble(int port, uint16_t left, uint16_t right) {
 
 bool RumbleTriggers(int port, uint16_t left, uint16_t right, uint32_t ms) {
     std::lock_guard lock(g_lock);
-    return port >= 0 && port < 4 && g_pads[port] && SDL_RumbleGamepadTriggers(g_pads[port], left, right, ms);
+    if (port < 0 || port >= 4 || !g_pads[port]) return false;
+    if (SDL_RumbleGamepadTriggers(g_pads[port], left, right, ms)) return true;
+    if (!g_trigger_failed[port]) {
+        g_trigger_failed[port] = true;
+        LOGR("input: controller %d trigger rumble failed: %s", port + 1, SDL_GetError());
+    }
+    return false;
 }
 
 }  // namespace input
