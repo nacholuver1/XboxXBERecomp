@@ -40,6 +40,7 @@ struct Assembled {
     Topology topology = Topology::Triangles;
     bool strip = false;             // line or triangle strip, drawn as a strip
     bool pretransformed = false;    // FVF XYZRHW
+    float x_min = 0, x_max = 0;     // pretransformed: the screen x range of the draw's vertices
     uint64_t decode = 0;            // VertexDecode per register, 4 bits each
     std::array<VertexElement, 16> elements{};
     std::array<VertexBuffer, 16> buffers{};

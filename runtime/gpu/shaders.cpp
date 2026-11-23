@@ -55,6 +55,7 @@ const char* kCommonTail = R"(    float4 spread[4];
     float4 lt[56];
     float4 rtshift;
     float4 zparams;
+    float4 hud;
 };
 )";
 
@@ -857,7 +858,7 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     if (pretransformed) {
         s += "    float4 rhw = " + v(0, "float4(0,0,0,1)") + ";\n";
         s += "    float w = rhw.w == 0 ? 1 : 1 / rhw.w;\n";
-        s += "    oPos = float4(rhw.xy, rhw.z / surf.z, w);\n";
+        s += "    oPos = float4(rhw.x * hud.x + hud.y, rhw.y, rhw.z / surf.z, w);\n";
     } else {
         s += "    float4 ip = float4(" + v(0, "float4(0,0,0,1)") + ".xyz, 1);\n";
         s += "    precise float4 cp = mul(ip, wvp);\n";

@@ -181,6 +181,7 @@ void ResetAssembled(Assembled& out) {
     out.draw_count = 0;
     out.index_count = 0;
     out.base_vertex = 0;
+    out.x_min = out.x_max = 0;
 }
 
 // the draw as Assemble got it, plus the vertex range it reads
@@ -346,6 +347,24 @@ bool UseIndexList(Assembled& out) {
 constexpr uint64_t kDenseSpanPerVertex = 4;
 constexpr uint64_t kDenseSpanSlack = 1024;
 
+// a pretransformed draw's screen x range, from its XYZRHW positions
+void ScreenXRange(const State& s, const VertexShader& layout, const DrawRange& d, Assembled& out) {
+    using namespace kernel;
+    const auto& in = layout.inputs[0];
+    const auto& st = s.streams[size_t(in.stream)];
+    uint32_t stride = StrideOf(s, layout, in);
+    const uint8_t* src = static_cast<const uint8_t*>(HostPtr(mem::VirtualFromPhysical(R32(st.vb + kResData)) + in.offset));
+    float lo = 1e30f, hi = -1e30f;
+    for (uint32_t i = 0; i < d.count; i++) {
+        float x;
+        std::memcpy(&x, src + size_t(DrawVertex(s, d, i)) * stride, 4);
+        lo = std::min(lo, x);
+        hi = std::max(hi, x);
+    }
+    out.x_min = lo;
+    out.x_max = hi;
+}
+
 bool AssembleRaw(const State& s, const Inputs& inputs, const DrawRange& d, Assembled& out) {
     bool dense = uint64_t(d.span) <= uint64_t(d.count) * kDenseSpanPerVertex + kDenseSpanSlack;
     int slot[16];
@@ -459,6 +478,7 @@ bool Assemble(const State& s, uint32_t prim, uint32_t start, uint32_t count, con
     int nregs = CollectRegs(s, *layout, regs, out);
     if (!nregs) return false;
     Inputs inputs = {*layout, regs, nregs};
+    if (out.pretransformed) ScreenXRange(s, *layout, d, out);
 
     // the guest's own vertices when the input assembler can read every element of them
     bool raw = RawReadable(s, inputs);

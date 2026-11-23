@@ -2868,6 +2868,23 @@ State SpriteStageZero(const State& s) {
     return moved;
 }
 
+// fit_hud: the present stretches the 4:3 frame to a wider output's shape, and with it the 2D the title draws over
+// the frame (HUD, text, menus). Each 2D draw is narrowed back to its own shape, pinned to the left edge when it sits
+// in the left third, to the right edge in the right third, else to the center. Draws across most of the width
+// (backgrounds, fades, copies of the frame) and targets of other shapes (render to texture) are left as they were.
+void HudFit(const Assembled& a, GuestExtent size, float hud[4]) {
+    hud[0] = 1;
+    hud[1] = 0;
+    if (!a.pretransformed || !app::Get().fit_hud || size.w * 3 != size.h * 4) return;
+    float k = (4.0f / 3.0f) / app::PresentAspect();
+    float w = float(size.w);
+    if (k > 0.999f || a.x_max - a.x_min >= 0.9f * w) return;
+    float mid = (a.x_min + a.x_max) * 0.5f;
+    float anchor = mid < w / 3 ? 0 : mid > w * 2 / 3 ? w : w / 2;
+    hud[0] = k;  // x' = anchor + (x - anchor) * k
+    hud[1] = anchor * (1 - k);
+}
+
 void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
     if (SpriteOnStage3(s, prim)) {
         Draw(SpriteStageZero(s), prim, start, count, indices);
@@ -2915,6 +2932,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     GuestExtent size;
     SurfaceSize(bound_rt_ ? s.rt : s.zs, size.w, size.h);
     DrawConstants c{};
+    HudFit(a, size, c.hud);
     UploadConstants(s, sh, k, stages, size, c);
     if (ext_) binds_ = {};
 
