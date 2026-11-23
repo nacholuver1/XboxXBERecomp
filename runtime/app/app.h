@@ -33,6 +33,7 @@ struct Settings {
     uint32_t audio_output = 0;         // audio::kOutputAuto, Stereo, Surround or Mono
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
     std::string game_path;                 // the game: a disc image (.iso) or a folder with the xbe; empty: assets
+    std::string accepted_release;          // SHA-1 of another release's xbe the player chose to start: not asked again
 };
 
 Settings& Get();

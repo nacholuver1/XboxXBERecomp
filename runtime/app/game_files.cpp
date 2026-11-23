@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cwchar>
 #include <cwctype>
 #include <fstream>
 #include <string_view>
@@ -167,10 +168,19 @@ bool FindGame(GameFiles& game) {
         MessageBoxW(nullptr, kGame.missing, kGame.short_title, MB_ICONERROR);
         return false;
     }
-    std::wstring text = other_name.filename().wstring() +
-                        L" is a different release of the game than this build was made from, and will most likely "
-                        L"crash.\n\nStart it anyway?";
-    if (MessageBoxW(nullptr, text.c_str(), kGame.short_title, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES) return false;
+    // asked once per release: a yes is kept in the settings, and a relaunch (front end <-> level) was already asked
+    std::string sha = Sha1(other.xbe);
+    bool relaunched = std::wcsstr(GetCommandLineW(), L"--relaunched") != nullptr;
+    if (!relaunched && sha != Get().accepted_release) {
+        std::wstring text = other_name.filename().wstring() +
+                            L" is a different release of the game than this build was made from, and may crash.\n\n"
+                            L"Start it anyway? Yes is remembered for this release.";
+        if (MessageBoxW(nullptr, text.c_str(), kGame.short_title, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
+            return false;
+        Get().accepted_release = sha;
+        Save();
+    }
+    LOGR("Game: starting another release (%s)", relaunched ? "relaunch" : "accepted");
     game = std::move(other);
     kernel::MountDisc(std::move(other_disc));
     return true;
