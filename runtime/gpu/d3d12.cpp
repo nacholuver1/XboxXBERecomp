@@ -1754,6 +1754,9 @@ TexKind TextureKind(const TextureDesc& d) {
 
 constexpr float kUpscaledMin = 1.01f;  // host texels per console texel past rounding: the target is upscaled
 
+// X1R5G5B5, R5G6B5, X8R8G8B8, swizzled and linear: colour formats with no alpha
+bool NoAlphaFormat(uint32_t f) { return f == 0x03 || f == 0x05 || f == 0x07 || f == 0x11 || f == 0x1C || f == 0x1E; }
+
 ID3D12Resource* D3D12Backend::BindTargetTexture(const State& s, int stage, const TextureDesc& d, Target& t, bool box,
                                                 DrawTextures& stages) {
     TexInfo& info = stages.info[stage];
@@ -1777,6 +1780,11 @@ ID3D12Resource* D3D12Backend::BindTargetTexture(const State& s, int stage, const
     }
     if (ext_) ext_->Sampled(d, &t, 0, info);
     sv.Format = t.depth ? kDepthRead : t.fmt;
+    // read through a format without alpha (X8R8G8B8, X1R5G5B5, R5G6B5) the console's alpha is 1, whatever the draws
+    // left in the host target's alpha channel (Crimson Skies' boost blur took the back buffer's alpha as its blend
+    // weight and kept part of the previous frames: a ghost image)
+    if (!t.depth && NoAlphaFormat(d.format))
+        sv.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(0, 1, 2, D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_1);
     // the console reads the pixels it is about to overwrite: give the draw a copy
     if (feedback) return Feedback(t);
     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -2905,11 +2913,15 @@ State SpriteStageZero(const State& s) {
 // the frame (HUD, text, menus). Each 2D draw is narrowed back to its own shape about the screen's center, so the 2D
 // keeps its 4:3 layout in the middle. Pinning draws to the edges split boxes made of several draws (a panel, its
 // brackets and its text) apart. Draws across most of the width (backgrounds, fades, copies of the frame) and
-// targets of other shapes (render to texture) are left as they were.
-void HudFit(const Assembled& a, GuestExtent size, float hud[4]) {
+// targets of other shapes (render to texture) are left as they were. So is a draw that reads a rendered image: it
+// is an effect laid over the place in the scene the image was taken from (Crimson Skies' boost lens copies the
+// frame around the plane and draws it back there; narrowed, it slid off the plane toward the center: a double image)
+void HudFit(const Assembled& a, GuestExtent size, const DrawTextures& stages, float hud[4]) {
     hud[0] = 1;
     hud[1] = 0;
     if (!a.pretransformed || !app::Get().fit_hud || size.w * 3 != size.h * 4) return;
+    for (int i = 0; i < 4; i++)
+        if (stages.rt[i] && !stages.info[i].shadow) return;
     float k = (4.0f / 3.0f) / app::PresentAspect();
     float w = float(size.w);
     if (k > 0.999f || a.x_max - a.x_min >= 0.9f * w) return;
@@ -2965,7 +2977,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     GuestExtent size;
     SurfaceSize(bound_rt_ ? s.rt : s.zs, size.w, size.h);
     DrawConstants c{};
-    HudFit(a, size, c.hud);
+    HudFit(a, size, stages, c.hud);
     UploadConstants(s, sh, k, stages, size, c);
     if (ext_) binds_ = {};
 
