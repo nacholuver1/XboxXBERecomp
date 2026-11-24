@@ -20,6 +20,12 @@ std::mutex g_lock;
 bool g_sdl = false;
 SDL_Gamepad* g_pads[4] = {};
 bool g_trigger_failed[4] = {};  // the first failed trigger rumble on a port is logged
+// in release logs too (issue #6): the first rumble the game sets on a port, its first non-zero one, the first trigger
+// rumble, and the first failed main rumble, so a log tells "the game never asked" from "the pad refused"
+struct RumbleSeen {
+    bool any, nonzero, trigger, failed;
+};
+RumbleSeen g_seen[4] = {};
 
 void AddPad(SDL_JoystickID id) {
     for (SDL_Gamepad* pad : g_pads)
@@ -33,6 +39,7 @@ void AddPad(SDL_JoystickID id) {
         return;
     }
     g_trigger_failed[n - 1] = false;
+    g_seen[n - 1] = {};
     // in release logs too: players' reports need the pad and what SDL says it can do (issue #6)
     const char* name = SDL_GetGamepadName(*slot);
     const char* type = SDL_GetGamepadStringForType(SDL_GetGamepadType(*slot));
@@ -142,15 +149,45 @@ uint16_t HeldOnAnyController() {
 
 // the motors run until set again
 void Rumble(int port, uint16_t left, uint16_t right) {
+    const uint16_t asked_left = left, asked_right = right;
     if (app::kGame.rumble) app::kGame.rumble(port, left, right);
     std::lock_guard lock(g_lock);
-    if (port >= 0 && port < 4 && g_pads[port]) SDL_RumbleGamepad(g_pads[port], left, right, 0);
+    if (port < 0 || port >= 4) return;
+    RumbleSeen& seen = g_seen[port];
+    SDL_Gamepad* pad = g_pads[port];
+    const char* name = pad ? SDL_GetGamepadName(pad) : nullptr;
+    if (!name) name = pad ? "" : "no controller";
+    bool ok = pad && SDL_RumbleGamepad(pad, left, right, 0);
+    auto log = [&](const char* what) {
+        if (pad && !ok) seen.failed = true;  // a failure is logged once
+        LOGR("input: controller %d (%s) %s: game %u/%u, sent %u/%u, %s%s", port + 1, name, what,
+             unsigned(asked_left), unsigned(asked_right), unsigned(left), unsigned(right), ok ? "ok" : "failed: ",
+             ok ? "" : (pad ? SDL_GetError() : "not plugged in"));
+    };
+    if (!seen.any) {
+        seen.any = true;
+        log("first rumble");
+    }
+    if (!seen.nonzero && (asked_left || asked_right || left || right)) {
+        seen.nonzero = true;
+        log("first non-zero rumble");
+    }
+    if (pad && !ok && !seen.failed) {
+        seen.failed = true;
+        log("rumble");
+    }
 }
 
 bool RumbleTriggers(int port, uint16_t left, uint16_t right, uint32_t ms) {
     std::lock_guard lock(g_lock);
     if (port < 0 || port >= 4 || !g_pads[port]) return false;
-    if (SDL_RumbleGamepadTriggers(g_pads[port], left, right, ms)) return true;
+    bool ok = SDL_RumbleGamepadTriggers(g_pads[port], left, right, ms);
+    if (!g_seen[port].trigger && (left || right)) {
+        g_seen[port].trigger = true;
+        LOGR("input: controller %d first non-zero trigger rumble: %u/%u for %u ms, %s%s", port + 1,
+             unsigned(left), unsigned(right), unsigned(ms), ok ? "ok" : "failed: ", ok ? "" : SDL_GetError());
+    }
+    if (ok) return true;
     if (!g_trigger_failed[port]) {
         g_trigger_failed[port] = true;
         LOGR("input: controller %d trigger rumble failed: %s", port + 1, SDL_GetError());
