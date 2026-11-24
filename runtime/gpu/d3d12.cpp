@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -835,6 +836,36 @@ private:
     uint64_t fps_n_ = 0;
 };
 
+// Under Proton/Wine (Steam Deck, Linux) the shader compiler is Wine's own d3dcompiler_47 unless Microsoft's sits
+// beside the exe, and Wine's fails on these shaders (black screen). Log which one loaded; Wine's version or null.
+static const char* WineVersion() {
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    auto get = ntdll ? reinterpret_cast<const char* (*)()>(GetProcAddress(ntdll, "wine_get_version")) : nullptr;
+    return get ? get() : nullptr;
+}
+
+static void LogShaderCompiler() {
+    wchar_t path[MAX_PATH] = L"?";
+    if (HMODULE m = GetModuleHandleW(L"d3dcompiler_47.dll")) GetModuleFileNameW(m, path, MAX_PATH);
+    std::u8string u = std::filesystem::path(path).u8string();
+    const char* wine = WineVersion();
+    LOGR("d3d12: shader compiler %s%s%s", reinterpret_cast<const char*>(u.c_str()), wine ? ", Wine " : "",
+         wine ? wine : "");
+}
+
+// once, under Wine only: say how to get a shader compiler that works instead of leaving a black screen
+static void WarnShaderCompilerUnderWine() {
+    static std::atomic<bool> warned{false};
+    if (!WineVersion() || warned.exchange(true)) return;
+    // no owner window: the window's thread may be waiting on this one
+    MessageBoxW(nullptr,
+                L"Shaders could not be compiled, so the screen may stay black.\n\n"
+                L"Under Proton or Wine (Steam Deck, Linux) the game needs Microsoft's d3dcompiler_47.dll beside "
+                L"the game's exe (it comes in the release zip: re-extract it if it is missing), or install "
+                L"d3dcompiler_47 into the game's prefix with Protontricks.",
+                app::kGame.short_title, MB_ICONWARNING | MB_TOPMOST);
+}
+
 bool D3D12Backend::Init(uint32_t width, uint32_t height) {
     g_reversed_depth = true;
     guest_w_ = width;
@@ -850,6 +881,7 @@ bool D3D12Backend::Init(uint32_t width, uint32_t height) {
     ImGui_ImplDX12_Init(dev_.Get(), kFrames, DXGI_FORMAT_B8G8R8A8_UNORM, ui_heap_.Get(),
                         ui_heap_->GetCPUDescriptorHandleForHeapStart(), ui_heap_->GetGPUDescriptorHandleForHeapStart());
     LoadSettings();
+    LogShaderCompiler();
     Begin();
     LOGI("d3d12: %ux%u guest, %ux%u window, render scale %.3f", width, height, bb_w_, bb_h_, scale_);
     return true;
@@ -1465,6 +1497,7 @@ ID3DBlob* D3D12Backend::Compile(const std::string& src, const char* entry, const
         LOGE("d3d12: %s compile failed: %s", profile, err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
         LOGE("%s", src.c_str());
         blobs_[hash] = nullptr;
+        WarnShaderCompilerUnderWine();
         return nullptr;
     }
     blobs_[hash] = code;
