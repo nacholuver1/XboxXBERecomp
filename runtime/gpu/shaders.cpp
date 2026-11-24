@@ -399,6 +399,12 @@ std::string TexUv(const TexInfo& t, int i, const std::string& uv) {
     return n + F(" + rtshift[%d] * (", i) + step + ")";
 }
 
+// stage n holds a plain 2D bump map whose du (blue) and dv (green) are signed (D3DTSIGN_BSIGNED | D3DTSIGN_GSIGNED)
+bool SignedBump(const PixelKey& k, uint32_t n) {
+    const TexInfo& t = k.tex[n];
+    return ((k.colorsign >> (n * 4)) & 0xC) == 0xC && t.kind == kTex2D && !t.shadow && !(t.flags & (kTexWide | kTexUpscale));
+}
+
 // texture shader stage i, per its mode
 std::string TexFetch(const PixelKey& k, int i) {
     uint32_t mode = (k.tex_modes >> (i * 5)) & 0x1F;
@@ -451,7 +457,10 @@ std::string TexFetch(const PixelKey& k, int i) {
             return s;
         case 6:
         case 7:  // bump env map: signed du dv through the 2x2 matrix, 7 scales by luminance
-            s = F("float2 duv%d = sbyte(t%u.bgr, 0, 256, 127).xy;\n", i, in);
+            if (SignedBump(k, in) && ((k.tex_modes >> (in * 5)) & 0x1F) == 1)
+                s = F("float2 duv%d = sbump(tex%u, smp%u, %s);\n", i, in, in, TexUv(k.tex[in], int(in), F("tc%u.xy / tc%u.w", in, in)).c_str());
+            else
+                s = F("float2 duv%d = sbyte(t%u.bgr, 0, 256, 127).xy;\n", i, in);
             s += put(sample2(F("%s.xy + float2(dot(bumpmat[%d].xz, duv%d), dot(bumpmat[%d].yw, duv%d))", q, i, i, i, i)));
             if (mode == 7) s += F("t%d *= bumplum[%d].x * t%u.r + bumplum[%d].y;\n", i, i, in, i);
             return s;
@@ -478,6 +487,17 @@ std::string TexFetch(const PixelKey& k, int i) {
 const char* kPsSbyte = R"(
 // unorm to byte b, less lo under 128 or hi from 128, over d
 float3 sbyte(float3 u, float lo, float hi, float d) { float3 b = u * 255; return (b - (b >= 128 ? hi : lo)) / d; }
+float4 signedbytes(float4 u) { float4 b = u * 255; return (b - (b >= 128 ? 256 : 0)) / 127; }
+// du dv (blue, green) of a bump map with signed channels (D3DTSS_COLORSIGN): the console converts each texel to signed
+// before it filters, so -1 and +1 neighbours blend to 0 instead of to the 128 wrap; bilinear over the base level
+float2 sbump(Texture2D t, SamplerState s, float2 uv) {
+    float w, h;
+    t.GetDimensions(w, h);
+    float2 f = frac(uv * float2(w, h) - 0.5);
+    float4 b = signedbytes(t.GatherBlue(s, uv)), g = signedbytes(t.GatherGreen(s, uv));
+    float2 top = lerp(float2(b.w, g.w), float2(b.z, g.z), f.x), bottom = lerp(float2(b.x, g.x), float2(b.y, g.y), f.x);
+    return lerp(top, bottom, f.y);
+}
 )";
 const char* kPsTail = R"(// a texel of a video frame, deinterlaced: a row that differs from both its neighbours the same way is a comb from
 // the other field, and is blended with them; elsewhere the texel is left as it is
@@ -659,6 +679,7 @@ PixelKey MakePixelKey(const State& s, const TexInfo tex[4]) {
     for (int i = 0; i < 4; i++) {
         k.tex[i] = tex[i];
         if (s.tss[size_t(i)][kTssAlphaKill] == 4) k.alphakill |= 1u << i;  // D3DTALPHAKILL_ENABLE
+        k.colorsign |= (s.tss[size_t(i)][kTssColorSign] >> 28) << (i * 4);
     }
     k.flat = s.simple[kMShadeMode >> 2] == 0x1D00;  // D3DSHADE_FLAT
     k.two_sided = s.rs[kRsTwoSidedLighting] != 0;
@@ -1008,11 +1029,17 @@ std::string PixelHlsl(const PixelKey& k) {
         }
     } else {
         body += "float4 cur = v0, tmp = 0;\n";
+        // D3DTOP_BUMPENVMAP (25) and BUMPENVMAPLUMINANCE (26) at stage i: its texture is the du dv map, taken through
+        // stage i's matrix into an offset on stage i + 1's coordinates (in that stage's units, texels for linear
+        // textures); the luminance form also scales stage i + 1's texel; the bump stage passes the colour on
+        uint32_t bumped = 0;  // the previous stage was a bump stage: 25 or 26
         for (int i = 0; i < 4; i++) {
             const uint32_t* f = k.ff[i];
             if (f[0] <= 1) break;
             const TexInfo& t = k.tex[i];
-            std::string uv = TexUv(t, i, (k.proj >> i) & 1 ? F("tc%d.xy / tc%d.w", i, i) : F("tc%d.xy", i));
+            std::string base = (k.proj >> i) & 1 ? F("tc%d.xy / tc%d.w", i, i) : F("tc%d.xy", i);
+            if (bumped) base = F("(%s + float2(dot(bumpmat[%d].xz, duv%d), dot(bumpmat[%d].yw, duv%d)))", base.c_str(), i - 1, i - 1, i - 1, i - 1);
+            std::string uv = TexUv(t, i, base);
             std::string cube;
             if (t.shadow)
                 body += F("float4 t%d = shadow(tex%d, smp%d, ", i, i, i) + TexUv(t, i, F("tc%d.xy / tc%d.w", i, i)) +
@@ -1026,8 +1053,22 @@ std::string PixelHlsl(const PixelKey& k) {
             else if (t.kind) body += F("float4 t%d = tex%d.Sample(smp%d, tc%d.xyz);\n", i, i, i, i);
             else body += F("float4 t%d = float4(1,1,1,1);\n", i);
             body += Hooks().Fetched(t, i);
+            if (bumped == 26) body += F("t%d *= saturate(lum%d);\n", i, i - 1);
+            bumped = 0;
             if ((k.alphakill >> i) & 1) body += F("if (t%d.a == 0) discard;\n", i);
             const char* dst = f[8] == 5 ? "tmp" : "cur";
+            if ((f[0] == 25 || f[0] == 26) && i < 3) {
+                bumped = f[0];
+                if (SignedBump(k, uint32_t(i)))
+                    body += F("float2 duv%d = sbump(tex%d, smp%d, %s);\n", i, i, i, uv.c_str());
+                else
+                    body += F("float2 duv%d = sbyte(t%d.bgr, 0, 256, 127).xy;\n", i, i);
+                // luminance in red (X8L8V8U8 is X8R8G8B8 on the console), unsigned
+                if (bumped == 26) body += F("float lum%d = t%d.r * bumplum[%d].x + bumplum[%d].y;\n", i, i, i, i);
+                std::string a = f[4] <= 1 ? std::string("cur.a") : FfOp(f[4], FfArg(f[5], i, true), FfArg(f[6], i, true), FfArg(f[7], i, true), i, true);
+                body += F("%s = float4(cur.rgb, saturate(%s));\n", dst, a.c_str());
+                continue;
+            }
             std::string rgb = FfOp(f[0], FfArg(f[1], i, false), FfArg(f[2], i, false), FfArg(f[3], i, false), i, false);
             std::string a = f[4] <= 1 ? std::string("cur.a") : FfOp(f[4], FfArg(f[5], i, true), FfArg(f[6], i, true), FfArg(f[7], i, true), i, true);
             body += F("{ float3 c3 = saturate(%s); float c1 = saturate(%s); %s = float4(c3, c1); }\n", rgb.c_str(), a.c_str(), dst);

@@ -35,6 +35,7 @@ struct PixelKey {
     uint32_t proj = 0;       // fixed function: bit per stage sampled at coordinates divided by w
     uint32_t quad = 0;       // a screen quad: QuadHlsl
     uint32_t alphatest = 0;  // alpha test on: only then may the shader discard, which turns off early depth tests
+    uint32_t colorsign = 0;  // D3DTSS_COLORSIGN per stage, 4 bits each: A R G B signed (the top nibble of the state)
     bool operator==(const PixelKey& o) const;
 };
 
