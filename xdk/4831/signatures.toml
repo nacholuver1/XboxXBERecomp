@@ -17,6 +17,8 @@ BinkDoFrame = {}
 BinkGetSummary = {}
 BinkNextFrame = {}
 BinkWait = {}
+BinkOpen = {}
+BinkClose = {}
 CDevice_KickOff = {sec = "D3D", len = 0xE3, hash = "0xEBBAF49BF9A48A6B", calls = [[0x34, "0x97C6CFAEFCD6771C", []]], k = [0x40, 0x40, 0x40, 0x40, 0x44, 0x35C, 0x2000, 0x23BC, 0x23BC, 0x23BC, 0x23BC, 0x23C0, 0x257C, 0x2BD8, 0x2C10, 0x100410, 0x100410, 0x100410, 0xFFFFFFF, 0xFFFFFFF], ret = 0, regs = ["ecx"]}
 CDirectSoundStream_AddRef = {sec = "DSOUND", len = 0x47, hash = "0x38BA55285D0DEB0F", calls = [[0x1E, "0x77CF69460E7107DD", []]], k = [0x80004005], ret = 4, regs = []}
 CDirectSoundStream_Discontinuity = {sec = "DSOUND", len = 0x4D, hash = "0x9DAC564EADCFB54", calls = [[0x1E, "0x77CF69460E7107DD", []], [0x2F, "0x10FD26F6273461B5", [[0x18, "0x51B34A38CCAA7141"], [0x4, "0x7C528B01F97475C1"], [0x39, "0x7FC597D868C6CAE"]]]], k = [0x80004005], ret = 4, regs = []}

@@ -29,6 +29,7 @@ struct Settings {
     bool original_aspect = false;    // 4:3 with bars at the sides on any output, the console told of a 4:3 TV
     bool fit_hud = true;             // wider than 4:3: 2D (HUD, menus) keeps its shape and 4:3 layout, centered
     bool upscale_videos = true;      // video frames and stills: bicubic and deinterlaced instead of bilinear
+    bool ai_movies = true;           // movies/ai/<movie>.mp4 beside the exe drawn in place of the movie (gpu/movies.h)
     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS

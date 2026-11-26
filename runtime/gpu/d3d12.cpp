@@ -35,6 +35,7 @@
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "gpu/ext.h"
+#include "gpu/movies.h"
 #include "gpu/shaders.h"
 #include "gpu/texture.h"
 #include "gpu/texturedumper.h"
@@ -708,6 +709,7 @@ private:
     void LatchPackKey(Tex& tx, const TextureDesc& d, const FormatInfo& fi, const uint32_t* colours);
     void LatchPackImage(Tex& tx);
     void CreatePackTexture(Tex& r, const texturedumper::Image& img);
+    const Tex* MovieFrame(const TextureDesc& d);
     void ReleasePackTextures();
     void EnsurePixelShader(const PixelKey& pk, DrawShaders& sh);
     void BuildPipelineKey(const State& s, const Assembled& a, uint64_t vh, uint64_t ph, PsoKey& k);
@@ -891,6 +893,8 @@ private:
     DrawBinds binds_;
     std::unordered_map<uint64_t, Tex> textures_;  // by data address, a P8 texture's with its palette's above
     std::unordered_map<uint64_t, Tex> pack_textures_;  // texture pack images by key, kept for the run
+    Tex movie_tex_;              // the upscaled movie frame drawn in place of the playing movie's (gpu/movies.h)
+    uint32_t movie_frame_ = 0;   // its Bink frame number, 0 none
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> blit_psos_;
     Extension* ext_ = nullptr;
     // one frame capture: every draw in a text file, each target as the frame leaves it, the textures it read
@@ -2104,11 +2108,48 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
         info.flags |= kTexUpscale;
     if (tx.pack_gen != texturedumper::Generation()) LatchPackKey(tx, d, fi, colours);
     if (tx.pack_key) LatchPackImage(tx);
-    const Tex& drawn = tx.swap ? *tx.swap : tx;
+    const Tex* movie = MovieFrame(d);
+    if (movie) info.flags &= ~kTexUpscale;  // already upscaled and deinterlaced: no comb blend
+    const Tex& drawn = movie ? *movie : tx.swap ? *tx.swap : tx;
     FillTextureView(drawn, d, stages.sv[stage]);
     if (fi.depth) info.shadow = ShadowDepthKind(d.format);
     if (ext_) ext_->Sampled(d, nullptr, tx.flags, info);
     return drawn.res.Get();
+}
+
+// the playing movie's frame as its upscaled file has it, when that is decoded; null: draw the game's own
+const Tex* D3D12Backend::MovieFrame(const TextureDesc& d) {
+    constexpr uint32_t kLinA8R8G8B8 = 0x12, kLinX8R8G8B8 = 0x1E;
+    if ((d.format != kLinX8R8G8B8 && d.format != kLinA8R8G8B8) || !movies::IsMovie(d.width, d.height)) {
+        movie_frame_ = 0;
+        return nullptr;
+    }
+    movies::Frame f;
+    if (movies::Take(movie_frame_, f)) {
+        D3D12_RESOURCE_STATES st = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        if (!movie_tex_.res || movie_tex_.res->GetDesc().Width != f.width || movie_tex_.res->GetDesc().Height != f.height) {
+            if (movie_tex_.res) CurrentFrame().garbage.push_back(movie_tex_.res);
+            movie_tex_ = Tex{};
+            movie_tex_.fmt = DXGI_FORMAT_B8G8R8X8_UNORM;
+            D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+            D3D12_RESOURCE_DESC td = Texture2DDesc(movie_tex_.fmt, f.width, f.height);
+            if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                     nullptr, IID_PPV_ARGS(&movie_tex_.res)))) {
+                LOGE("movies: a %ux%u frame texture could not be made", f.width, f.height);
+                movie_tex_ = Tex{};
+                return nullptr;
+            }
+            st = D3D12_RESOURCE_STATE_COPY_DEST;
+        }
+        Transition(movie_tex_.res.Get(), st, D3D12_RESOURCE_STATE_COPY_DEST);
+        UploadTextureLevel(movie_tex_, 0, 0, f.bgrx, f.width * 4);
+        Transition(movie_tex_.res.Get(), st, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        movie_frame_ = f.number;
+    }
+    // the decoder fell behind or the movie jumped: the game's own frame until it catches up
+    uint32_t shown = movies::Shown();
+    if (!movie_tex_.res || !movie_frame_ || movie_frame_ + 2 < shown || movie_frame_ > shown + 2) return nullptr;
+    return &movie_tex_;
 }
 
 // after new bytes or a texture setting change: the name the pack and the dumps know the bytes by

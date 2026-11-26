@@ -3,6 +3,7 @@
 #include <mutex>
 #include <unordered_set>
 
+#include "gpu/movies.h"
 #include "xdk/hle.h"
 
 using namespace kernel;
@@ -54,3 +55,22 @@ X86_FUNC(GUEST(BinkNextFrame)) {
     }
     GUEST_ORIG(BinkNextFrame)(ctx, base);
 }
+
+// Upscaled movies (gpu/movies.h): BinkOpen names the movie and gives its struct, BinkClose ends it. Both are found by
+// hand in images whose Bink the signatures miss.
+#if HAS_BinkOpen && HAS_BinkClose
+X86_EXTERN_FUNC(GUEST_ORIG(BinkOpen));
+X86_FUNC(GUEST(BinkOpen)) {
+    uint32_t name = R32(ctx.esp + 4), flags = R32(ctx.esp + 8);
+    GUEST_ORIG(BinkOpen)(ctx, base);
+    constexpr uint32_t kBinkFileHandle = 0x800000;  // the name is a file handle
+    if (ctx.eax && name && !(flags & kBinkFileHandle))
+        gpu::movies::Opened(ctx.eax, static_cast<const char*>(::kernel::HostPtr(name)));
+}
+
+X86_EXTERN_FUNC(GUEST_ORIG(BinkClose));
+X86_FUNC(GUEST(BinkClose)) {
+    gpu::movies::Closed(R32(ctx.esp + 4));
+    GUEST_ORIG(BinkClose)(ctx, base);
+}
+#endif

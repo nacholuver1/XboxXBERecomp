@@ -70,6 +70,7 @@ void Load() {
     s.original_aspect = t["original_aspect"].value_or(s.original_aspect);
     s.fit_hud = t["fit_hud"].value_or(s.fit_hud);
     s.upscale_videos = t["upscale_videos"].value_or(s.upscale_videos);
+    s.ai_movies = t["ai_movies"].value_or(s.ai_movies);
     s.custom_textures = t["custom_textures"].value_or(s.custom_textures);
     s.dump_textures = t["dump_textures"].value_or(s.dump_textures);
     s.texture_dump_format = std::min(t["texture_dump_format"].value_or(s.texture_dump_format), 1u);
@@ -119,6 +120,7 @@ toml::table Table() {
                   {"original_aspect", s.original_aspect},
                   {"fit_hud", s.fit_hud},
                   {"upscale_videos", s.upscale_videos},
+                  {"ai_movies", s.ai_movies},
                   {"custom_textures", s.custom_textures},
                   {"dump_textures", s.dump_textures},
                   {"texture_dump_format", int64_t(s.texture_dump_format)},
