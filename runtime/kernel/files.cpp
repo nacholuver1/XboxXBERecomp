@@ -6,6 +6,8 @@
 #include <fstream>
 #include <map>
 
+#include "core/log.h"
+#include "kernel/crypto.h"
 #include "kernel/disc.h"
 #include "kernel/kernel.h"
 #include "kernel/exports.h"
@@ -722,10 +724,40 @@ constexpr uint8_t kModeSense10 = 0x5A;
 constexpr uint8_t kXboxSecurityPage = 0x3E;
 constexpr uint32_t kSecurityPageBytes = 13;  // mode header, page code and length, then the three bytes XAPI checks
 
+// READ DVD STRUCTURE of the disc's security sectors (layer 0xFE): titles whose certificate asks for it (later
+// XDKs, certificate field 0x1D8 bit 0) check that the block carries their certificate's timestamp and that its SHA-1 digest is
+// right before the signature, which XcVerifyPKCS1Signature accepts. A real disc's block passes; the game files
+// carry none, so the block is made consistent here. Untouched retail xbes need it: xiso tools' media patch skips
+// the whole check (Crimson Skies' untouched USA retail xbe stopped on the dirty-disc screen without it)
+constexpr uint8_t kReadDvdStructure = 0xAD;
+constexpr uint8_t kSecuritySectorLayer = 0xFE;
+constexpr uint32_t kSsTimestamp = 0x4AB;  // the certificate's timestamp (certificate +4), as the disc was mastered
+constexpr uint32_t kSsHashed = 0x4CB;    // bytes from offset 4 covered by the digest, after their uint32 length
+constexpr uint32_t kSsDigest = 0x4CF;    // SHA-1(uint32 length + bytes 4..0x4CF)
+constexpr uint32_t kSsMinBytes = 0x4E3;  // up to the signature
+constexpr uint32_t kXbeCertificate = 0x10118;  // the loaded xbe header's certificate address
+
+static void SecuritySectors(uint32_t data, uint32_t n) {
+    if (!data || n < kSsMinBytes) return;
+    std::memset(HostPtr(data), 0, n);
+    W32(data + kSsTimestamp, R32(R32(kXbeCertificate) + 4));
+    uint8_t ctx[128];
+    uint32_t len = kSsHashed;
+    crypto::ShaInit(ctx);
+    crypto::ShaUpdate(ctx, reinterpret_cast<const uint8_t*>(&len), 4);
+    crypto::ShaUpdate(ctx, static_cast<const uint8_t*>(HostPtr(data + 4)), kSsHashed);
+    crypto::ShaFinal(ctx, static_cast<uint8_t*>(HostPtr(data + kSsDigest)));
+    LOGR("Disc security sectors answered (certificate timestamp %08X)", R32(data + kSsTimestamp));
+}
+
 // XAPI starts a title whose media must be an Xbox DVD only once the drive's security page reports an
 // authenticated disc (page bytes 2 and 4 set, byte 3 one); the game files stand in for that disc
 static void ScsiPassThrough(uint32_t sptd) {
     uint32_t cdb = sptd + kSptdCdb;
+    if (G<uint8_t>(cdb) == kReadDvdStructure && G<uint8_t>(cdb + 6) == kSecuritySectorLayer) {
+        SecuritySectors(R32(sptd + kSptdDataBuffer), R32(sptd + kSptdTransferLength));
+        return;
+    }
     if (G<uint8_t>(cdb) != kModeSense10 || (G<uint8_t>(cdb + 2) & 0x3F) != kXboxSecurityPage) return;
     uint32_t data = R32(sptd + kSptdDataBuffer), n = R32(sptd + kSptdTransferLength);
     if (!data || n < kSecurityPageBytes || n > 0xFF) return;
