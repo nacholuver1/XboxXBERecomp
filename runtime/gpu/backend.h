@@ -68,5 +68,7 @@ inline std::atomic<uint64_t> g_perf_sync_late{0}, g_perf_sync_block{0};  // read
 
 // F3: save the next frame, every draw and target, under diag::CaptureDir
 inline std::atomic<bool> g_capture{false};
+// F12: the next presented frame, without the overlays, as a PNG in screenshots\ beside the exe, then an app::PostNote
+inline std::atomic<bool> g_screenshot{false};
 
 }  // namespace gpu

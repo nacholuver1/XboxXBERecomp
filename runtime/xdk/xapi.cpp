@@ -1,6 +1,7 @@
 // XAPI functions that talk to hardware: controller ports and the hard disk cache partition
 #include <chrono>
 
+#include "app/app.h"
 #include "core/input.h"
 #include "xdk/hle.h"
 #include "xdk/layout.h"
@@ -151,14 +152,23 @@ HLE_STDCALL(XInputSetState, 2) {
     return 997;  // ERROR_IO_PENDING, already complete
 }
 
-// A recompiled image launches through the XAPI, then a process restart into its executable; any other
-// (the dashboard, updates) is refused and the title stays in its menu.
+// A recompiled image launches through the XAPI, then a process restart into its executable. Another program on the
+// disc (a demo launcher, extras) restarts the title's own first image instead, with a note for the player, since the
+// title would stop on its error screen; any other (the dashboard, updates) is refused and the title stays in its menu.
 X86_EXTERN_FUNC(GUEST_ORIG(XLaunchNewImageA));
 X86_FUNC(GUEST(XLaunchNewImageA)) {
     std::string path = ReadCString(R32(ctx.esp + 4));
     if (ImageExe(path)) {
         GUEST_ORIG(XLaunchNewImageA)(ctx, base);
         return;
+    }
+    bool on_disc = path.size() > 3 && (path[0] == 'd' || path[0] == 'D') && path[1] == ':' && path[2] == '\\';
+    if (on_disc && !app::kGame.images.empty()) {
+        LOGW("xapi: %s is not recompiled: restarting the title instead", path.c_str());
+        std::string name = path.substr(3);
+        app::PostNote("That menu item starts " + name + ", a separate program on the disc this port doesn't include. "
+                      "The game restarted.", true);
+        kernel::Relaunch(app::kGame.images[0].second);
     }
     LOGW("xapi: launch of %s refused, it is not recompiled", path.c_str());
     Return(ctx, 2, 2);  // ERROR_FILE_NOT_FOUND

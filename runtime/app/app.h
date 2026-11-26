@@ -24,6 +24,9 @@ struct Settings {
     bool vsync = true;
     uint32_t aniso = 0;              // 0 as the game asks
     bool fxaa = false;               // FXAA on the presented frame
+    bool fsr = true;                 // a frame stretched up to the output: FSR 1 upscaling instead of bilinear
+    uint32_t sharpening = 0;         // FSR 1 RCAS on the presented frame, 0 (off) to 100%
+    bool original_aspect = false;    // 4:3 with bars at the sides on any output, the console told of a 4:3 TV
     bool fit_hud = true;             // wider than 4:3: 2D (HUD, menus) keeps its shape and 4:3 layout, centered
     bool upscale_videos = true;      // video frames and stills: bicubic and deinterlaced instead of bilinear
     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
@@ -40,6 +43,9 @@ struct Settings {
 Settings& Get();
 void Load();
 void Save();
+// every setting and GameInfo option back to its default but the game's path, the accepted release and the options
+// named in keep; what GameInfo::load reads (key bindings) stays. The caller saves
+void ResetToDefaults(const std::vector<std::string>& keep);
 void LogSettings();  // every setting, as the settings file has them
 void LogSystem();    // the machine and the settings, at a run's start
 void ApplyDisplay();  // any thread
@@ -82,6 +88,11 @@ void OpenGameWindow(bool apply = true);  // any thread but the window thread's; 
 bool StartHandover();   // window thread, at launch; true: the game window starts hidden
 bool HandingOver();
 void FinishHandover();  // any thread but the window thread's: opens the game window, lets the old instance go
+
+// a short line for the player at the bottom of the screen, which the game's ui draws for a few seconds; a note posted
+// with relaunch set waits for the next instance (a title relaunch), handed over in the environment
+void PostNote(const std::string& text, bool relaunch = false);
+std::string TakeNote();  // a note posted since the last call, once; empty without one
 
 // held around ImGui: the window thread's messages and the renderer's frame
 std::recursive_mutex& UiLock();

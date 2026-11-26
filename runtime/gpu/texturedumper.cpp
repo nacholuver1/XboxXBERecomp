@@ -600,4 +600,38 @@ Lookup Take(uint64_t key, Image& out) {
     return Lookup::Loading;
 }
 
+void WritePngAsync(std::filesystem::path path, std::vector<uint8_t> bgra, uint32_t w, uint32_t h, void (*done)(bool)) {
+    std::thread([path = std::move(path), px = std::move(bgra), w, h, done] {
+        // a factory of this thread's own: Wic() belongs to the dump worker
+        HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        bool ok = false;
+        {
+            ComPtr<IWICImagingFactory> wic;
+            ComPtr<IWICStream> file;
+            ComPtr<IWICBitmapEncoder> encoder;
+            ComPtr<IWICBitmapFrameEncode> frame;
+            WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+            HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
+            if (SUCCEEDED(hr)) hr = wic->CreateStream(&file);
+            if (SUCCEEDED(hr)) hr = file->InitializeFromFilename(path.c_str(), GENERIC_WRITE);
+            if (SUCCEEDED(hr)) hr = wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+            if (SUCCEEDED(hr)) hr = encoder->Initialize(file.Get(), WICBitmapEncoderNoCache);
+            if (SUCCEEDED(hr)) hr = encoder->CreateNewFrame(&frame, nullptr);
+            if (SUCCEEDED(hr)) hr = frame->Initialize(nullptr);
+            if (SUCCEEDED(hr)) hr = frame->SetSize(w, h);
+            if (SUCCEEDED(hr)) hr = frame->SetPixelFormat(&format);
+            if (SUCCEEDED(hr)) {
+                hr = frame->WritePixels(h, w * 4, UINT(px.size()), const_cast<BYTE*>(px.data()));
+            }
+            if (SUCCEEDED(hr)) hr = frame->Commit();
+            if (SUCCEEDED(hr)) hr = encoder->Commit();
+            ok = SUCCEEDED(hr);
+            if (ok) LOGR("screenshot: %s", Utf8(path).c_str());
+            else LOGE("screenshot: %s not written (0x%08lx)", Utf8(path).c_str(), static_cast<unsigned long>(hr));
+        }
+        if (SUCCEEDED(co)) CoUninitialize();
+        if (done) done(ok);
+    }).detach();
+}
+
 }  // namespace gpu::texturedumper

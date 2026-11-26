@@ -163,6 +163,128 @@ float4 psmain(O i) : SV_Target {
 }
 )";
 
+// AMD FidelityFX Super Resolution 1 (MIT, ffx_fsr1.h), the FP32 path written for a pixel shader: easu upscales the
+// frame to the output's size along its local edges (12 taps, deringed by the 4 nearest), rcas sharpens it, with the
+// gamma lookup after (opts.x). easu: c0 to c3 are FsrEasuCon's; rcas: c0.x the sharpness as exp2(-stops), c0.zw the
+// viewport's top left in the target
+const char* kFsrHlsl = R"(
+cbuffer F : register(b1) { float4 c0; float4 c1; float4 c2; float4 c3; float4 opts; };
+Texture2D img : register(t0);
+Texture2D lut : register(t1);
+SamplerState ls : register(s0);
+SamplerState ps : register(s1);
+struct O { float4 p : SV_Position; };
+O vs(uint id : SV_VertexID) {
+    O o;
+    float2 t = float2((id << 1) & 2, id & 2);
+    o.p = float4(t * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+float3 grade(float3 c) {
+    if (opts.x > 0) c = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
+    return c;
+}
+void easuSet(inout float2 dir, inout float len, float w, float la, float lb, float lc, float ld, float le) {
+    float dc = ld - lc, cb = lc - lb;
+    float lenX = max(abs(dc), abs(cb));
+    lenX = lenX > 0 ? 1.0 / lenX : 0;
+    float dirX = ld - lb;
+    dir.x += dirX * w;
+    lenX = saturate(abs(dirX) * lenX);
+    len += lenX * lenX * w;
+    float ec = le - lc, ca = lc - la;
+    float lenY = max(abs(ec), abs(ca));
+    lenY = lenY > 0 ? 1.0 / lenY : 0;
+    float dirY = le - la;
+    dir.y += dirY * w;
+    lenY = saturate(abs(dirY) * lenY);
+    len += lenY * lenY * w;
+}
+void easuTap(inout float3 ac, inout float aw, float2 off, float2 dir, float2 len, float lob, float clp, float3 c) {
+    float2 v = float2(off.x * dir.x + off.y * dir.y, off.x * -dir.y + off.y * dir.x) * len;
+    float d2 = min(dot(v, v), clp);
+    float wb = 2.0 / 5.0 * d2 - 1, wa = lob * d2 - 1;
+    wb *= wb;
+    wa *= wa;
+    wb = 25.0 / 16.0 * wb - (25.0 / 16.0 - 1.0);
+    float w = wb * wa;
+    ac += c * w;
+    aw += w;
+}
+float4 easu(O i) : SV_Target {
+    float2 pp = floor(i.p.xy) * c0.xy + c0.zw;
+    float2 fp = floor(pp);
+    pp -= fp;
+    float2 p0 = fp * c1.xy + c1.zw, p1 = p0 + c2.xy, p2 = p0 + c2.zw, p3 = p0 + c3.xy;
+    float4 bczzR = img.GatherRed(ls, p0), bczzG = img.GatherGreen(ls, p0), bczzB = img.GatherBlue(ls, p0);
+    float4 ijfeR = img.GatherRed(ls, p1), ijfeG = img.GatherGreen(ls, p1), ijfeB = img.GatherBlue(ls, p1);
+    float4 klhgR = img.GatherRed(ls, p2), klhgG = img.GatherGreen(ls, p2), klhgB = img.GatherBlue(ls, p2);
+    float4 zzonR = img.GatherRed(ls, p3), zzonG = img.GatherGreen(ls, p3), zzonB = img.GatherBlue(ls, p3);
+    float4 bczzL = bczzB * 0.5 + (bczzR * 0.5 + bczzG), ijfeL = ijfeB * 0.5 + (ijfeR * 0.5 + ijfeG);
+    float4 klhgL = klhgB * 0.5 + (klhgR * 0.5 + klhgG), zzonL = zzonB * 0.5 + (zzonR * 0.5 + zzonG);
+    float bL = bczzL.x, cL = bczzL.y, iL = ijfeL.x, jL = ijfeL.y, fL = ijfeL.z, eL = ijfeL.w;
+    float kL = klhgL.x, lL = klhgL.y, hL = klhgL.z, gL = klhgL.w, oL = zzonL.z, nL = zzonL.w;
+    float2 dir = 0;
+    float len = 0;
+    easuSet(dir, len, (1 - pp.x) * (1 - pp.y), bL, eL, fL, gL, jL);
+    easuSet(dir, len, pp.x * (1 - pp.y), cL, fL, gL, hL, kL);
+    easuSet(dir, len, (1 - pp.x) * pp.y, fL, iL, jL, kL, nL);
+    easuSet(dir, len, pp.x * pp.y, gL, jL, kL, lL, oL);
+    float dirR = dot(dir, dir);
+    bool zro = dirR < 1.0 / 32768.0;
+    dirR = zro ? 1 : rsqrt(dirR);
+    dir.x = zro ? 1 : dir.x;
+    dir *= dirR;
+    len = len * 0.5;
+    len *= len;
+    float stretch = dot(dir, dir) / max(abs(dir.x), abs(dir.y));
+    float2 len2 = float2(1 + (stretch - 1) * len, 1 - 0.5 * len);
+    float lob = 0.5 + ((1.0 / 4.0 - 0.04) - 0.5) * len;
+    float clp = 1.0 / lob;
+    float3 f = float3(ijfeR.z, ijfeG.z, ijfeB.z), g = float3(klhgR.w, klhgG.w, klhgB.w);
+    float3 j = float3(ijfeR.y, ijfeG.y, ijfeB.y), k = float3(klhgR.x, klhgG.x, klhgB.x);
+    float3 mn = min(min(f, g), min(j, k)), mx = max(max(f, g), max(j, k));
+    float3 ac = 0;
+    float aw = 0;
+    easuTap(ac, aw, float2(0, -1) - pp, dir, len2, lob, clp, float3(bczzR.x, bczzG.x, bczzB.x));
+    easuTap(ac, aw, float2(1, -1) - pp, dir, len2, lob, clp, float3(bczzR.y, bczzG.y, bczzB.y));
+    easuTap(ac, aw, float2(-1, 1) - pp, dir, len2, lob, clp, float3(ijfeR.x, ijfeG.x, ijfeB.x));
+    easuTap(ac, aw, float2(0, 1) - pp, dir, len2, lob, clp, j);
+    easuTap(ac, aw, float2(0, 0) - pp, dir, len2, lob, clp, f);
+    easuTap(ac, aw, float2(-1, 0) - pp, dir, len2, lob, clp, float3(ijfeR.w, ijfeG.w, ijfeB.w));
+    easuTap(ac, aw, float2(1, 1) - pp, dir, len2, lob, clp, k);
+    easuTap(ac, aw, float2(2, 1) - pp, dir, len2, lob, clp, float3(klhgR.y, klhgG.y, klhgB.y));
+    easuTap(ac, aw, float2(2, 0) - pp, dir, len2, lob, clp, float3(klhgR.z, klhgG.z, klhgB.z));
+    easuTap(ac, aw, float2(1, 0) - pp, dir, len2, lob, clp, g);
+    easuTap(ac, aw, float2(1, 2) - pp, dir, len2, lob, clp, float3(zzonR.z, zzonG.z, zzonB.z));
+    easuTap(ac, aw, float2(0, 2) - pp, dir, len2, lob, clp, float3(zzonR.w, zzonG.w, zzonB.w));
+    return float4(min(mx, max(mn, ac / aw)), 1);
+}
+float3 load(int2 p, int2 size) { return img.Load(int3(clamp(p, int2(0, 0), size - 1), 0)).rgb; }
+float4 rcas(O i) : SV_Target {
+    int2 size;
+    img.GetDimensions(size.x, size.y);
+    int2 sp = int2(floor(i.p.xy - c0.zw));
+    float3 b = load(sp + int2(0, -1), size), d = load(sp + int2(-1, 0), size), e = load(sp, size);
+    float3 f = load(sp + int2(1, 0), size), h = load(sp + int2(0, 1), size);
+    float bL = b.b * 0.5 + (b.r * 0.5 + b.g), dL = d.b * 0.5 + (d.r * 0.5 + d.g), eL = e.b * 0.5 + (e.r * 0.5 + e.g);
+    float fL = f.b * 0.5 + (f.r * 0.5 + f.g), hL = h.b * 0.5 + (h.r * 0.5 + h.g);
+    // noise: a lone pixel unlike its ring is sharpened half as much
+    float nz = 0.25 * (bL + dL + fL + hL) - eL;
+    float range = max(max(max(bL, dL), max(eL, fL)), hL) - min(min(min(bL, dL), min(eL, fL)), hL);
+    nz = saturate(abs(nz) / max(range, 1.0 / 65536.0));
+    nz = -0.5 * nz + 1;
+    float3 mn4 = min(min(b, d), min(f, h)), mx4 = max(max(b, d), max(f, h));
+    float3 hitMin = min(mn4, e) / (4 * mx4 + 1.0 / 65536.0);
+    float3 hitMax = (1 - max(mx4, e)) / min(4 * mn4 - 4, -1.0 / 65536.0);
+    float3 lobeC = max(-hitMin, hitMax);
+    float lobe = max(-(0.25 - 1.0 / 16.0), min(max(lobeC.r, max(lobeC.g, lobeC.b)), 0)) * c0.x;
+    lobe *= nz;
+    float3 c = (lobe * (b + d + f + h) + e) / (4 * lobe + 1);
+    return float4(grade(saturate(c)), 1);
+}
+)";
+
 // Depth is reversed in a 32 bit float buffer: 1 at the near clip, 0 at the far one, where a float keeps its finest
 // steps; a 24 bit buffer storing z / w lost the steps that told distant surfaces apart
 constexpr DXGI_FORMAT kDepthTypeless = DXGI_FORMAT_R32G8X24_TYPELESS;
@@ -643,7 +765,12 @@ private:
     void ResizeSwap();
     void UploadGammaRamp();
     void DrawFrame(Target* t, uint32_t bi);
-    void BlitFrame(Target& t);
+    void BlitFrame(Target& t, D3D12_CPU_DESCRIPTOR_HANDLE bb);
+    // BlitFrame's FSR 1 steps: post_[i] at w x h, kept between frames, its view at kRtvCount + kFrames + i
+    ID3D12Resource* PostTarget(int i, uint32_t w, uint32_t h);
+    void CopyScreenshot(ID3D12Resource* bb, D3D12_RESOURCE_STATES& bs);  // DrawFrame, before the overlays
+    void SaveScreenshot();                                               // the next Present, before its frame
+    void FsrPass(const char* entry, ID3D12Resource* src, DXGI_FORMAT fmt, const float c[20]);
     void RenderUi();
     void ReleaseOldTextures();
     void ResetFrame();
@@ -794,6 +921,14 @@ private:
     uint32_t guest_h_ = 480;
     uint32_t bb_w_ = 0;
     uint32_t bb_h_ = 0;
+    struct Post {
+        ComPtr<ID3D12Resource> res;
+        uint32_t w = 0, h = 0;
+        D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    } post_[2];
+    D3D12_BOX frame_box_{};               // the frame's rectangle in the backbuffer, BlitFrame's last
+    ComPtr<ID3D12Resource> shot_;         // F12: the frame copied out of the backbuffer, saved at the next present
+    uint32_t shot_w_ = 0, shot_h_ = 0;
     float scale_ = 1.0f;
     // surfaces locked without a wait: copies in flight, the newest finished one goes to guest memory
     struct Late {
@@ -961,7 +1096,7 @@ void D3D12Backend::CreateBackBufferViews() {
 void D3D12Backend::CreateHeaps() {
     srv_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kSrvCount, true, srv_heap_);
     smp_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerCount, true, smp_heap_);
-    rtv_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kRtvCount + kFrames, false, rtv_heap_);
+    rtv_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kRtvCount + kFrames + 2, false, rtv_heap_);
     dsv_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kDsvCount, false, dsv_heap_);
     CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true, ui_heap_);
     for (uint32_t i = kRtvCount; i-- > 0;) free_rtv_.push_back(i);
@@ -3353,7 +3488,47 @@ void D3D12Backend::UploadGammaRamp() {
     cl_->CopyTextureRegion(&dl, 0, 0, 0, &sl, nullptr);
 }
 
-void D3D12Backend::BlitFrame(Target& t) {
+ID3D12Resource* D3D12Backend::PostTarget(int i, uint32_t w, uint32_t h) {
+    Post& p = post_[i];
+    if (!p.res || p.w != w || p.h != h) {
+        if (p.res) CurrentFrame().garbage.push_back(p.res);
+        p.res = nullptr;
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        D3D12_RESOURCE_DESC td = Texture2DDesc(kBgra, w, h);
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        D3D12_CLEAR_VALUE cv{};
+        cv.Format = kBgra;
+        p.state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, p.state, &cv, IID_PPV_ARGS(&p.res)))) {
+            p.res = nullptr;
+            p.w = p.h = 0;
+            return nullptr;
+        }
+        p.w = w;
+        p.h = h;
+        dev_->CreateRenderTargetView(p.res.Get(), nullptr, Cpu(rtv_heap_.Get(), kRtvCount + kFrames + i, rtv_inc_));
+    }
+    return p.res.Get();
+}
+
+void D3D12Backend::FsrPass(const char* entry, ID3D12Resource* src, DXGI_FORMAT fmt, const float c[20]) {
+    ID3D12PipelineState* pso = EnsurePassPipeline(kFsrHlsl, entry, kBgra, -1);
+    if (!pso) return;
+    uint32_t slot = AllocSrvSlots(2);
+    D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
+    sv.Format = fmt;
+    sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sv.Texture2D.MipLevels = 1;
+    dev_->CreateShaderResourceView(src, &sv, Cpu(srv_heap_.Get(), slot, srv_inc_));
+    sv.Format = kBgra;
+    dev_->CreateShaderResourceView(lut_.Get(), &sv, Cpu(srv_heap_.Get(), slot + 1, srv_inc_));
+    Alloc cb = Upload(256, 256);
+    std::memcpy(cb.cpu, c, 20 * sizeof(float));
+    DrawFullScreen(pso, cb.gpu, slot);
+}
+
+void D3D12Backend::BlitFrame(Target& t, D3D12_CPU_DESCRIPTOR_HANDLE bb) {
     // 4:3, or the output's own shape (16:9 to 32:9) when the console reports a widescreen display
     float aspect = app::PresentAspect();
     float w = float(bb_w_);
@@ -3361,16 +3536,80 @@ void D3D12Backend::BlitFrame(Target& t) {
     float vw = std::min(w, h * aspect);
     float vh = vw / aspect;
     float uv[4] = {0, 0, 1, 1};
-    D3D12_VIEWPORT vp{(w - vw) / 2, (h - vh) / 2, vw, vh, 0, 1};
     D3D12_RECT scissor{0, 0, LONG(bb_w_), LONG(bb_h_)};
+    Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    D3D12_RESOURCE_DESC sd = t.res->GetDesc();
+    const app::Settings& s = app::Get();
+    // a frame rendered above the output's size (render_percent over 100) is averaged down over a box of its texels
+    // per pixel, which is what makes it supersampling; one bilinear tap would skip most of them
+    uint32_t taps = uint32_t(std::clamp(std::lround(float(sd.Height) / vh), 1l, 4l));
+    // FSR 1: a frame stretched up in either direction (below 100%, or the 4:3 frame widened to a wide screen) is
+    // upscaled by easu, never one shrunk in the other; sharpening is rcas on the frame at the output's size
+    uint32_t ow = uint32_t(std::max(std::lround(vw), 1l)), oh = uint32_t(std::max(std::lround(vh), 1l));
+    bool easu = s.fsr && sd.Width <= ow && sd.Height <= oh && (sd.Width < ow || sd.Height < oh);
+    bool rcas = s.sharpening > 0;
+    // a pass whose shader or pipeline can't be made falls back to the plain blit, never an undrawn target
+    if (easu && !EnsurePassPipeline(kFsrHlsl, "easu", kBgra, -1)) easu = false;
+    if (rcas && !EnsurePassPipeline(kFsrHlsl, "rcas", kBgra, -1)) rcas = false;
+    ID3D12Resource* out = easu || rcas ? PostTarget(0, ow, oh) : nullptr;
+    ID3D12Resource* aa = easu && s.fxaa ? PostTarget(1, uint32_t(sd.Width), sd.Height) : nullptr;
+    if (!out || (easu && s.fxaa && !aa)) {
+        D3D12_VIEWPORT vp{(w - vw) / 2, (h - vh) / 2, vw, vh, 0, 1};
+        cl_->RSSetViewports(1, &vp);
+        cl_->RSSetScissorRects(1, &scissor);
+        binds_ = {};
+        Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_, .taps = taps, .fxaa = s.fxaa});
+        frame_box_ = {UINT(std::lround(vp.TopLeftX)), UINT(std::lround(vp.TopLeftY)), 0,
+                      UINT(std::lround(vp.TopLeftX + vw)), UINT(std::lround(vp.TopLeftY + vh)), 1};
+        return;
+    }
+    auto ready = [&](int i) {  // post_[i] drawn, to read
+        Transition(post_[i].res.Get(), post_[i].state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    };
+    auto draw_to = [&](int i) {
+        Transition(post_[i].res.Get(), post_[i].state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        SetBlitTarget(Cpu(rtv_heap_.Get(), kRtvCount + kFrames + i, rtv_inc_), post_[i].w, post_[i].h);
+    };
+    ID3D12Resource* src = t.res.Get();
+    DXGI_FORMAT fmt = t.fmt;
+    if (easu) {
+        if (aa) {  // FXAA before the upscale, in the frame's own texels
+            draw_to(1);
+            Blit(src, fmt, uv, {.fxaa = true});
+            ready(1);
+            src = aa;
+            fmt = kBgra;
+        }
+        float iw = float(sd.Width), ih = float(sd.Height), fw = float(ow), fh = float(oh);
+        float c[20] = {iw / fw, ih / fh, 0.5f * iw / fw - 0.5f, 0.5f * ih / fh - 0.5f,
+                       1 / iw, 1 / ih, 1 / iw, -1 / ih,
+                       -1 / iw, 2 / ih, 1 / iw, 2 / ih,
+                       0, 4 / ih, 0, 0,
+                       0, 0, 0, 0};
+        draw_to(0);
+        FsrPass("easu", src, fmt, c);
+    } else {
+        draw_to(0);
+        Blit(src, fmt, uv, {.taps = taps, .fxaa = s.fxaa});
+    }
+    ready(0);
+    // to the screen, the frame's rectangle on whole pixels so the output's pixels meet the backbuffer's
+    float x0 = std::floor((w - float(ow)) / 2), y0 = std::floor((h - float(oh)) / 2);
+    cl_->OMSetRenderTargets(1, &bb, FALSE, nullptr);
+    bound_rt_ = bound_ds_ = nullptr;
+    D3D12_VIEWPORT vp{x0, y0, float(ow), float(oh), 0, 1};
+    frame_box_ = {UINT(x0), UINT(y0), 0, UINT(x0) + ow, UINT(y0) + oh, 1};
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &scissor);
     binds_ = {};
-    Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    // a frame rendered above the output's size (render_percent over 100) is averaged down over a box of its texels
-    // per pixel, which is what makes it supersampling; one bilinear tap would skip most of them
-    uint32_t taps = uint32_t(std::clamp(std::lround(float(t.res->GetDesc().Height) / vh), 1l, 4l));
-    Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_, .taps = taps, .fxaa = app::Get().fxaa});
+    if (rcas) {
+        // 0 to 100% is 2 to 0 stops below the strongest
+        float stops = 2.0f * (1.0f - float(std::min(s.sharpening, 100u)) / 100.0f);
+        float c[20] = {std::exp2(-stops), 0, x0, y0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, gamma_ ? 1.0f : 0.0f, 0, 0, 0};
+        FsrPass("rcas", out, kBgra, c);
+    } else {
+        Blit(out, kBgra, uv, {.gamma = gamma_});
+    }
 }
 
 void D3D12Backend::RenderUi() {
@@ -3393,7 +3632,11 @@ void D3D12Backend::DrawFrame(Target* t, uint32_t bi) {
     cl_->ClearRenderTargetView(rh, black, 0, nullptr);
     cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
     bound_rt_ = bound_ds_ = nullptr;
-    if (t) BlitFrame(*t);
+    if (t) BlitFrame(*t, rh);
+    if (t && g_screenshot.exchange(false)) {
+        CopyScreenshot(bb_[bi].Get(), bs);
+        cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
+    }
     RenderUi();
     Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_PRESENT);
 }
@@ -3476,8 +3719,65 @@ void LogPerf() {
     }
 }
 
+void D3D12Backend::CopyScreenshot(ID3D12Resource* bb, D3D12_RESOURCE_STATES& bs) {
+    D3D12_BOX box = frame_box_;
+    box.right = std::min<UINT>(box.right, bb_w_);
+    box.bottom = std::min<UINT>(box.bottom, bb_h_);
+    if (box.right <= box.left || box.bottom <= box.top) return;
+    uint32_t w = box.right - box.left, h = box.bottom - box.top;
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC td = Texture2DDesc(kBgra, w, h);
+    ComPtr<ID3D12Resource> shot;
+    if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                             IID_PPV_ARGS(&shot)))) {
+        LOGE("screenshot: no copy of %ux%u", w, h);
+        return;
+    }
+    Transition(bb, bs, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    D3D12_TEXTURE_COPY_LOCATION dl{shot.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    D3D12_TEXTURE_COPY_LOCATION sl{bb, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    cl_->CopyTextureRegion(&dl, 0, 0, 0, &sl, &box);
+    D3D12_RESOURCE_STATES ss = D3D12_RESOURCE_STATE_COPY_DEST;
+    Transition(shot.Get(), ss, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Transition(bb, bs, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    shot_ = shot;
+    shot_w_ = w;
+    shot_h_ = h;
+}
+
+// screenshots\<name>_<date>_<time>.png beside the exe; the read-back waits for the frame, the PNG is written off thread
+void D3D12Backend::SaveScreenshot() {
+    ComPtr<ID3D12Resource> shot = std::move(shot_);
+    std::vector<uint8_t> px;
+    if (!ReadBack(shot.Get(), shot_w_, shot_h_, px)) {
+        LOGE("screenshot: read-back failed");
+        return;
+    }
+    for (size_t i = 3; i < px.size(); i += 4) px[i] = 255;  // opaque, whatever the backbuffer's alpha held
+    SYSTEMTIME tm;
+    GetLocalTime(&tm);
+    wchar_t stamp[64];
+    swprintf(stamp, std::size(stamp), L"%ls_%04u-%02u-%02u_%02u-%02u-%02u", app::kGame.name, tm.wYear, tm.wMonth,
+             tm.wDay, tm.wHour, tm.wMinute, tm.wSecond);
+    std::error_code ec;
+    std::filesystem::path dir = app::ExeDir() / "screenshots";
+    std::filesystem::create_directories(dir, ec);
+    // a name no file has and no earlier screenshot of this run took: those are written off thread, maybe not yet
+    static std::unordered_set<std::wstring> taken;
+    std::filesystem::path path;
+    for (int n = 1;; n++) {
+        std::wstring name = std::wstring(stamp) + (n > 1 ? L"_" + std::to_wstring(n) : L"") + L".png";
+        path = dir / name;
+        if (!std::filesystem::exists(path, ec) && taken.insert(name).second) break;
+    }
+    texturedumper::WritePngAsync(path, std::move(px), shot_w_, shot_h_, [](bool ok) {
+        if (ok) app::PostNote("Screenshot saved to the screenshots folder");
+    });
+}
+
 void D3D12Backend::Present(const Surface& front) {
     PerfScope perf_present{g_perf.present};
+    if (shot_) SaveScreenshot();
     if (cap_) {
         FinishCapture(front);
     } else if (g_capture.exchange(false) && CaptureOn()) {
