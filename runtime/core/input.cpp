@@ -2,9 +2,18 @@
 #include "core/input.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <iterator>
 #include <mutex>
 #include <utility>
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 
 #include <SDL3/SDL.h>
 
@@ -26,6 +35,12 @@ struct RumbleSeen {
     bool any, nonzero, trigger, failed;
 };
 RumbleSeen g_seen[4] = {};
+// after a relaunch: ports the previous process had a controller on, shown plugged in (idle) until a controller takes
+// the port or kHoldMs pass. Windows finds the controllers again some time after start (0.45 s here, more on other PCs
+// and wireless pads), and the game's first look at port 1 can come before that (Reddit, Pandora hub)
+constexpr uint64_t kHoldMs = 3000;
+uint32_t g_held = 0;
+uint64_t g_held_until = 0;
 
 void AddPad(SDL_JoystickID id) {
     for (SDL_Gamepad* pad : g_pads)
@@ -39,6 +54,7 @@ void AddPad(SDL_JoystickID id) {
         return;
     }
     g_trigger_failed[n - 1] = false;
+    g_held &= ~(1u << (n - 1));
     g_seen[n - 1] = {};
     // in release logs too: players' reports need the pad and what SDL says it can do (issue #6)
     const char* name = SDL_GetGamepadName(*slot);
@@ -94,6 +110,13 @@ void Init() {
     LOGR("input: SDL %d.%d.%d", SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v));
     std::lock_guard lock(g_lock);
     g_sdl = true;
+    wchar_t held[16] = {};
+    if (GetEnvironmentVariableW(kRelaunchPads, held, 16) > 0) {
+        SetEnvironmentVariableW(kRelaunchPads, nullptr);  // not handed on again by itself
+        g_held = uint32_t(std::wcstoul(held, nullptr, 16)) & 0xF;
+        g_held_until = SDL_GetTicks() + kHoldMs;
+        if (g_held) LOGR("input: controller ports %X kept through the relaunch until found again", g_held);
+    }
     int count = 0;
     if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
         for (int i = 0; i < count; i++) AddPad(ids[i]);
@@ -128,10 +151,25 @@ Pad Poll(int port) {
             p.ly = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_LEFTY));
             p.rx = int16_t(axis(SDL_GAMEPAD_AXIS_RIGHTX));
             p.ry = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_RIGHTY));
+        } else if (g_held && port >= 0 && port < 4) {
+            if (SDL_GetTicks() >= g_held_until) {
+                LOGR("input: controller ports %X from before the relaunch not found again", g_held);
+                g_held = 0;
+            } else if (g_held & (1u << port)) {
+                p.connected = true;  // idle until the controller is found again
+            }
         }
     }
     if (app::kGame.pad) app::kGame.pad(port, p);
     return p;
+}
+
+uint32_t ConnectedPorts() {
+    std::lock_guard lock(g_lock);
+    uint32_t ports = g_held;  // a relaunch soon after the last one still hands on the ports not found yet
+    for (int i = 0; i < 4; i++)
+        if (g_pads[i]) ports |= 1u << i;
+    return ports;
 }
 
 uint16_t HeldOnAnyController() {

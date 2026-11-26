@@ -1,9 +1,11 @@
 #include <algorithm>
 #include <cstring>
+#include <cwchar>
 #include <cstdlib>
 #include <fstream>
 
 #include "app/app.h"
+#include "core/input.h"
 #include "kernel/kernel.h"
 
 #ifndef NOMINMAX
@@ -182,6 +184,10 @@ void Relaunch(const char* exe) {
     if (line.find(L"--relaunched") == std::wstring::npos) line += L" --relaunched";  // no boot splash again
     // this process lives on through the handover: the new one binds the same ports
     xnet::CloseSockets();
+    // the new process finds the controllers again some time after it starts: until then it shows these ports in use
+    wchar_t pads[16];
+    swprintf(pads, 16, L"%X", unsigned(input::ConnectedPorts()));
+    SetEnvironmentVariableW(input::kRelaunchPads, pads);
     STARTUPINFOW si{sizeof(si)};
     PROCESS_INFORMATION pi{};
     if (CreateProcessW(path.c_str(), line.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, nullptr, &si, &pi)) {

@@ -18,5 +18,9 @@ Pad Poll(int port);
 void Rumble(int port, uint16_t left, uint16_t right);
 // the trigger motors of a controller that has them (Xbox One / Series: impulse triggers), for ms; false without
 bool RumbleTriggers(int port, uint16_t left, uint16_t right, uint32_t ms);
+// a relaunch: the ports that had a controller, handed to the new process (kRelaunchPads), which reports them plugged
+// in (idle) until its own controllers turn up, so the game doesn't ask for a controller while they are found again
+uint32_t ConnectedPorts();
+inline constexpr wchar_t kRelaunchPads[] = L"XBE_RELAUNCH_PADS";
 
 }  // namespace input
