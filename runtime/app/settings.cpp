@@ -72,6 +72,7 @@ void Load() {
     s.upscale_videos = t["upscale_videos"].value_or(s.upscale_videos);
     s.ai_movies = t["ai_movies"].value_or(s.ai_movies);
     s.custom_textures = t["custom_textures"].value_or(s.custom_textures);
+    s.ai_textures = t["ai_textures"].value_or(s.ai_textures);
     s.dump_textures = t["dump_textures"].value_or(s.dump_textures);
     s.texture_dump_format = std::min(t["texture_dump_format"].value_or(s.texture_dump_format), 1u);
     s.join_ip = t["join_ip"].value_or(s.join_ip);
@@ -122,6 +123,7 @@ toml::table Table() {
                   {"upscale_videos", s.upscale_videos},
                   {"ai_movies", s.ai_movies},
                   {"custom_textures", s.custom_textures},
+                  {"ai_textures", s.ai_textures},
                   {"dump_textures", s.dump_textures},
                   {"texture_dump_format", int64_t(s.texture_dump_format)},
                   {"join_ip", s.join_ip},

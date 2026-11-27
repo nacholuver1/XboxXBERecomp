@@ -31,6 +31,7 @@ struct Settings {
     bool upscale_videos = true;      // video frames and stills: bicubic and deinterlaced instead of bilinear
     bool ai_movies = true;           // movies/ai/<movie>.mp4 beside the exe drawn in place of the movie (gpu/movies.h)
     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
+    bool ai_textures = false;        // images in textures\ai\ (made on the player's PC) too, below the player's own
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
     uint32_t language = 1;             // the console's language (XC_LANGUAGE): 1 English, 2 Japanese, 3 German,

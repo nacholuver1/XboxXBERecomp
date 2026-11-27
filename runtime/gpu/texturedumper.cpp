@@ -53,9 +53,11 @@ using Clock = std::chrono::steady_clock;
 
 // the settings as Update latched them, the render thread's
 struct Latched {
-    bool replacing = false;
+    bool replacing = false;  // either pack below is on
     bool dumping = false;
     uint32_t format = 0;
+    bool player = false;     // textures\replacement\ (custom_textures)
+    bool ai = false;         // textures\ai\ (ai_textures), made on the player's PC; the player's own pack wins
     bool operator==(const Latched&) const = default;
 };
 
@@ -173,17 +175,28 @@ std::string Utf8(const fs::path& p) {
     return std::string(s.begin(), s.end());
 }
 
-void ListPack(const fs::path& dir) {
-    g.files.clear();
+// the images under dir by the key in their names; a key already listed keeps its earlier file
+size_t ListImages(const fs::path& dir) {
+    size_t added = 0;
     std::error_code ec;
     fs::recursive_directory_iterator it(dir, ec);
     for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
         const fs::path& p = it->path();
         bool image = _wcsicmp(p.extension().c_str(), L".dds") == 0 || _wcsicmp(p.extension().c_str(), L".png") == 0;
         uint64_t key = image ? KeyInName(p.stem().wstring()) : 0;
-        if (key) g.files.emplace(key, p);
+        if (key) added += g.files.emplace(key, p).second;
     }
-    LOGR("texture pack: %zu images in %s", g.files.size(), Utf8(dir).c_str());
+    return added;
+}
+
+// the player's pack first, then the AI pack for the textures the player's does not replace
+void ListPack(const fs::path& dir) {
+    g.files.clear();
+    if (g.set.player) LOGR("texture pack: %zu images in %s", ListImages(dir), Utf8(dir).c_str());
+    if (g.set.ai) {
+        fs::path ai = dir.parent_path() / "ai";
+        LOGR("texture pack: %zu AI images in %s", ListImages(ai), Utf8(ai).c_str());
+    }
 }
 
 // DDS files
@@ -370,9 +383,10 @@ HRESULT LevelZeroBitmap(IWICImagingFactory* wic, const Image& img, std::vector<u
     return hr;
 }
 
-void WritePng(const fs::path& path, const Image& img) {
+// false when it could not be written whole (an existing file is left as it is and counts as written)
+bool WritePng(const fs::path& path, const Image& img) {
     std::error_code ec;
-    if (fs::exists(path, ec)) return;
+    if (fs::exists(path, ec)) return true;
     IWICImagingFactory* wic = Wic();
     std::vector<uint8_t> dds;  // the source reads it until the frame is written
     ComPtr<IWICBitmapSource> bgra;
@@ -393,6 +407,7 @@ void WritePng(const fs::path& path, const Image& img) {
     if (SUCCEEDED(hr)) hr = frame->Commit();
     if (SUCCEEDED(hr)) hr = encoder->Commit();
     if (FAILED(hr)) LOGE("texture dump: %s not written (0x%08lx)", Utf8(path).c_str(), static_cast<unsigned long>(hr));
+    return SUCCEEDED(hr);
 }
 
 bool ReadPng(const fs::path& path, Image& img) {
@@ -491,11 +506,15 @@ Image Decode(const TextureDesc& d, const uint8_t* guest, const uint32_t* palette
 // the settings into g.set; false when none changed
 bool LatchSettings() {
     const app::Settings& s = app::Get();
-    Latched now{s.custom_textures, s.dump_textures, s.texture_dump_format};
+    Latched now{s.custom_textures || s.ai_textures, s.dump_textures, s.texture_dump_format, s.custom_textures,
+                s.ai_textures};
     if (now == g.set) return false;
     g.set = now;
     fs::path root = app::ExeDir() / "textures";
     g.pack_dir = root / "replacement";
+    std::error_code made;
+    if (now.replacing) fs::create_directories(g.pack_dir, made);  // watched for changes, so it must exist
+    g.changed = Clock::time_point{};  // listed again with the new choice of packs
     if (now.dumping) {
         g.dump_dir = root / "dumps";
         std::error_code ec;
@@ -557,10 +576,72 @@ uint64_t Key(const TextureDesc& d, const FormatInfo& fi, const uint8_t* guest, c
     if (!Replacing() && !g.set.dumping) return 0;
     // cube maps, volumes and depth stay the console's; linear ones are movie frames and the game's own copies
     if (d.cube || d.depth > 1 || d.linear || UploadFormat(fi.host) == DXGI_FORMAT_UNKNOWN) return 0;
+    return KeyOf(d, guest, palette);
+}
+
+uint64_t KeyOf(const TextureDesc& d, const uint8_t* guest, const uint32_t* palette) {
     uint32_t shape[] = {d.format, d.width, d.height};
     uint64_t key = Hash(guest, LevelSize(d, 0), Hash(shape, sizeof(shape)));
     if (palette) key = Hash(palette, kPaletteBytes, key);
     return key ? key : 1;
+}
+
+std::string NameOf(uint64_t key, const TextureDesc& d) { return DumpName(key, d, "png"); }
+
+bool DecodeBgra(const TextureDesc& d, const uint8_t* guest, std::vector<uint8_t>& bgra) {
+    if (UploadFormat(Format(d.format).host) == DXGI_FORMAT_UNKNOWN) return false;
+    TextureDesc one = d;
+    one.levels = 1;
+    Image img = Decode(one, guest, nullptr);
+    IWICImagingFactory* wic = Wic();
+    std::vector<uint8_t> dds;
+    ComPtr<IWICBitmapSource> src;
+    if (!wic || FAILED(LevelZeroBitmap(wic, img, dds, src))) return false;
+    bgra.resize(size_t(d.width) * d.height * 4);
+    return SUCCEEDED(src->CopyPixels(nullptr, d.width * 4, UINT(bgra.size()), bgra.data()));
+}
+
+bool ReadBgra(const fs::path& path, std::vector<uint8_t>& bgra, uint32_t& w, uint32_t& h) {
+    Image img;
+    if (!ReadPng(path, img)) return false;
+    w = img.width;
+    h = img.height;
+    bgra = std::move(img.levels[0].px);
+    return true;
+}
+
+bool WriteBgra(const fs::path& path, const std::vector<uint8_t>& bgra, uint32_t w, uint32_t h) {
+    Image img{DXGI_FORMAT_B8G8R8A8_UNORM, w, h, {Level{bgra, w * 4}}};
+    // written under another name and renamed when whole: a cut-short write never has the final name
+    fs::path part = path;
+    part += "." + std::to_string(GetCurrentProcessId()) + "." + std::to_string(GetCurrentThreadId()) + ".part";
+    std::error_code ec;
+    fs::remove(part, ec);
+    bool ok = false;
+    {
+        ok = WritePng(part, img);  // the encoder and stream are released before the rename
+    }
+    if (ok) fs::rename(part, path, ec);
+    if (!ok || ec) {
+        fs::remove(part, ec);
+        return false;
+    }
+    return true;
+}
+
+bool ScaleBgra(const std::vector<uint8_t>& in, uint32_t w, uint32_t h, std::vector<uint8_t>& out, uint32_t w2,
+               uint32_t h2) {
+    IWICImagingFactory* wic = Wic();
+    ComPtr<IWICBitmap> bitmap;
+    ComPtr<IWICBitmapScaler> scaler;
+    HRESULT hr = wic ? wic->CreateBitmapFromMemory(w, h, GUID_WICPixelFormat32bppBGRA, w * 4, UINT(in.size()),
+                                                   const_cast<BYTE*>(in.data()), &bitmap)
+                     : E_FAIL;
+    if (SUCCEEDED(hr)) hr = wic->CreateBitmapScaler(&scaler);
+    if (SUCCEEDED(hr)) hr = scaler->Initialize(bitmap.Get(), w2, h2, WICBitmapInterpolationModeHighQualityCubic);
+    out.resize(size_t(w2) * h2 * 4);
+    if (SUCCEEDED(hr)) hr = scaler->CopyPixels(nullptr, w2 * 4, UINT(out.size()), out.data());
+    return SUCCEEDED(hr);
 }
 
 void Dump(uint64_t key, const TextureDesc& d, const uint8_t* guest, const uint32_t* palette) {
