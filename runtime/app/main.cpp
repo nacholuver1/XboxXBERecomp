@@ -249,6 +249,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     bool relaunched = std::wcsstr(GetCommandLineW(), L"--relaunched") != nullptr;
     std::string log = app::kGame.log;
     if (app::Instance() > 1) log += "-" + std::to_string(app::Instance());
+    // a setup step the game runs without a window (RecompLauncher's --prepare, a game's own tool flags) may run
+    // beside the game: its own log, so it neither rotates nor truncates the game's
+    if (std::wcsstr(GetCommandLineW(), L"--prepare") || std::wcsstr(GetCommandLineW(), L"--ai-movies")) log += "-setup";
     logx::Init((app::ExeDir() / "logs").string(), log, relaunched);
     app::Load();
     if (app::kGame.init) app::kGame.init();
